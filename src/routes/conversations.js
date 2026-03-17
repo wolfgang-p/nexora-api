@@ -17,7 +17,10 @@ async function handleListConversations(req, res) {
     .from('conversations')
     .select(`
       id, type, created_at,
-      conversation_participants (user_id)
+      conversation_participants (
+        user_id,
+        users (id, username, display_name, avatar_url, public_key, is_online)
+      )
     `)
     .in('id', conversationIds)
     .order('created_at', { ascending: false });
@@ -35,8 +38,36 @@ async function handleCreateConversation(req, res, body) {
     return sendError(res, 400, 'Direct conversations must have exactly 2 participants');
   }
 
-  // Actually checking existing direct chat using raw intersection might be tricky, we will proceed with creation as basic mvp.
-  // Ideally we would enforce unique (user1, user2) pairs for direct conversations using SQL indexing, or query it.
+  if (type === 'direct' && participants.length === 2) {
+    const { data: existingParts, error: checkErr } = await supabase
+      .from('conversation_participants')
+      .select('conversation_id')
+      .in('user_id', participants);
+      
+    if (!checkErr && existingParts) {
+      // Group by conversation_id to find a match
+      const countMap = {};
+      let foundConvId = null;
+      for (const p of existingParts) {
+        countMap[p.conversation_id] = (countMap[p.conversation_id] || 0) + 1;
+        if (countMap[p.conversation_id] === 2) {
+          foundConvId = p.conversation_id;
+          break;
+        }
+      }
+      if (foundConvId) {
+        // Return existing conversation
+        const { data: existingConv } = await supabase
+          .from('conversations')
+          .select('*')
+          .eq('id', foundConvId)
+          .single();
+        if (existingConv) {
+          return sendJSON(res, 200, existingConv);
+        }
+      }
+    }
+  }
 
   const { data: conversation, error: convError } = await supabase
     .from('conversations')

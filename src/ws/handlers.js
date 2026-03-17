@@ -38,6 +38,16 @@ async function handleMessage(userId, data, ws) {
     if (receiverWs && receiverWs.readyState === 1 /* OPEN */) {
       receiverWs.send(JSON.stringify(payload));
     }
+
+    // Notify sender that it is sent successfully
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({
+        type: 'MESSAGE_SENT',
+        messageId: msgData.id,
+        conversationId: data.conversationId,
+        temporaryId: data.temporaryId // From frontend
+      }));
+    }
   } else if (data.type === 'MESSAGE_DELIVERED' || data.type === 'MESSAGE_READ' || 
              data.type === 'TYPING_START' || data.type === 'TYPING_STOP') {
     const receiverWs = getConnection(data.recipientId);

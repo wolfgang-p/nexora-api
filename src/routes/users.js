@@ -9,11 +9,21 @@ async function handleSearchUsers(req, res, queryUrl) {
 
   const searchUsername = q.startsWith('@') ? q.slice(1).toLowerCase() : q.toLowerCase();
 
-  const { data: users, error } = await supabase
+  let query = supabase
     .from('users')
     .select('id, username, display_name, avatar_url, public_key')
-    .ilike('username', `%${searchUsername}%`)
     .limit(20);
+
+  if (q.startsWith('+') || !isNaN(q[0])) {
+    // Phone search setup
+    const phoneSearch = q.startsWith('+') ? q : `+${q}`;
+    query = query.ilike('phone_number', `%${phoneSearch}%`);
+  } else {
+    // Username / Display Name search
+    query = query.or(`username.ilike.%${searchUsername}%,display_name.ilike.%${searchUsername}%`);
+  }
+
+  const { data: users, error } = await query;
 
   if (error) return sendError(res, 500, error.message);
   sendJSON(res, 200, users);
