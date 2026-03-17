@@ -41,9 +41,9 @@ async function handleGetProfile(req, res, id) {
 }
 
 async function handleUpdateProfile(req, res, body) {
-  const { displayName, username, avatarUrl } = body;
+  const { displayName, username, avatarUrl, publicKey } = body;
   
-  if (!displayName && !username && !avatarUrl) {
+  if (!displayName && !username && !avatarUrl && !publicKey) {
     return sendError(res, 400, "Nothing to update");
   }
 
@@ -51,6 +51,7 @@ async function handleUpdateProfile(req, res, body) {
   if (displayName !== undefined) updates.display_name = displayName;
   if (username !== undefined) updates.username = username;
   if (avatarUrl !== undefined) updates.avatar_url = avatarUrl;
+  if (publicKey !== undefined) updates.public_key = publicKey;
   
   const { data: updatedUser, error } = await supabase
     .from('users')
