@@ -16,7 +16,7 @@ async function handleListConversations(req, res) {
   const { data: conversations, error: convError } = await supabase
     .from('conversations')
     .select(`
-      id, type, created_at,
+      id, type, name, avatar_url, created_at,
       conversation_participants (
         user_id,
         users (id, username, display_name, avatar_url, public_key, is_online)
@@ -71,7 +71,12 @@ async function handleCreateConversation(req, res, body) {
 
   const { data: conversation, error: convError } = await supabase
     .from('conversations')
-    .insert({ type, created_by: req.user.userId })
+    .insert({ 
+      type, 
+      created_by: req.user.userId,
+      name: body.name || null,
+      avatar_url: body.avatarUrl || null
+    })
     .select()
     .single();
 

@@ -40,7 +40,43 @@ async function handleGetProfile(req, res, id) {
   sendJSON(res, 200, user);
 }
 
+async function handleUpdateProfile(req, res, body) {
+  const { displayName, username, avatarUrl } = body;
+  
+  if (!displayName && !username && !avatarUrl) {
+    return sendError(res, 400, "Nothing to update");
+  }
+
+  const updates = {};
+  if (displayName !== undefined) updates.display_name = displayName;
+  if (username !== undefined) updates.username = username;
+  if (avatarUrl !== undefined) updates.avatar_url = avatarUrl;
+  
+  const { data: updatedUser, error } = await supabase
+    .from('users')
+    .update(updates)
+    .eq('id', req.user.userId)
+    .select('id, phone_number, display_name, username, account_type, avatar_url, public_key, is_online, last_seen')
+    .single();
+
+  if (error) {
+    if (error.code === '23505') return sendError(res, 409, 'Username already exists');
+    return sendError(res, 500, error.message);
+  }
+
+  sendJSON(res, 200, {
+    id: updatedUser.id,
+    phone: updatedUser.phone_number,
+    displayName: updatedUser.display_name,
+    username: updatedUser.username,
+    accountType: updatedUser.account_type,
+    avatarUrl: updatedUser.avatar_url,
+    publicKey: updatedUser.public_key
+  });
+}
+
 module.exports = {
   handleSearchUsers,
-  handleGetProfile
+  handleGetProfile,
+  handleUpdateProfile
 };

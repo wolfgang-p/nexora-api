@@ -25,6 +25,8 @@ CREATE TABLE otps (
 CREATE TABLE conversations (
     id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
     type text CHECK (type IN ('direct', 'group')) NOT NULL,
+    name text,
+    avatar_url text,
     created_at timestamp with time zone DEFAULT now(),
     created_by uuid REFERENCES users(id)
 );

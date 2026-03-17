@@ -1,10 +1,18 @@
 const { getConnection } = require('./connections');
 const supabase = require('../db/supabase');
 
+async function getConversationParticipants(conversationId, senderId) {
+  const { data, error } = await supabase
+    .from('conversation_participants')
+    .select('user_id')
+    .eq('conversation_id', conversationId);
+    
+  if (error || !data) return [];
+  return data.map(p => p.user_id).filter(id => id !== senderId);
+}
+
 async function handleMessage(userId, data, ws) {
   if (data.type === 'MESSAGE_SEND') {
-    // Deliver to recipient directly if online
-    const receiverWs = getConnection(data.recipientId);
     
     // Save to DB
     const { data: msgData, error } = await supabase
@@ -35,8 +43,12 @@ async function handleMessage(userId, data, ws) {
       createdAt: msgData.created_at
     };
 
-    if (receiverWs && receiverWs.readyState === 1 /* OPEN */) {
-      receiverWs.send(JSON.stringify(payload));
+    const targetUserIds = await getConversationParticipants(data.conversationId, userId);
+    for (const targetId of targetUserIds) {
+      const receiverWs = getConnection(targetId);
+      if (receiverWs && receiverWs.readyState === 1) {
+        receiverWs.send(JSON.stringify(payload));
+      }
     }
 
     // Notify sender that it is sent successfully
@@ -50,10 +62,14 @@ async function handleMessage(userId, data, ws) {
     }
   } else if (data.type === 'MESSAGE_DELIVERED' || data.type === 'MESSAGE_READ' || 
              data.type === 'TYPING_START' || data.type === 'TYPING_STOP') {
-    const receiverWs = getConnection(data.recipientId);
-    if (receiverWs && receiverWs.readyState === 1) {
-      data.senderId = userId; // inject sender id
-      receiverWs.send(JSON.stringify(data));
+    const targetUserIds = await getConversationParticipants(data.conversationId, userId);
+    
+    for (const targetId of targetUserIds) {
+      const receiverWs = getConnection(targetId);
+      if (receiverWs && receiverWs.readyState === 1) {
+        data.senderId = userId; // inject sender id
+        receiverWs.send(JSON.stringify(data));
+      }
     }
     
     // update db (if MESSAGE_DELIVERED or MESSAGE_READ)

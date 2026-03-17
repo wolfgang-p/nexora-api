@@ -46,6 +46,11 @@ async function routeRequest(req, res) {
       return await userRoutes.handleSearchUsers(req, res, req.url);
     }
 
+    if (method === 'PUT' && urlParams === '/users/profile') {
+      const body = await parseJSONBody(req);
+      return await userRoutes.handleUpdateProfile(req, res, body);
+    }
+
     if (method === 'GET' && urlParams.match(/^\/users\/([^\/]+)\/profile$/)) {
       const id = urlParams.split('/')[2];
       return await userRoutes.handleGetProfile(req, res, id);
