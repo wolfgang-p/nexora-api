@@ -76,8 +76,37 @@ async function handleUpdateProfile(req, res, body) {
   });
 }
 
+async function handleBlockUser(req, res, body) {
+  const { blocked_id } = body;
+  if (!blocked_id) return sendError(res, 400, 'blocked_id is required');
+  if (blocked_id === req.user.userId) return sendError(res, 400, 'Cannot block yourself');
+
+  const { error } = await supabase
+    .from('blocked_users')
+    .insert({ blocker_id: req.user.userId, blocked_id });
+
+  if (error) {
+    if (error.code === '23505') return sendJSON(res, 200, { success: true }); // already blocked
+    return sendError(res, 500, error.message);
+  }
+  sendJSON(res, 201, { success: true });
+}
+
+async function handleUnblockUser(req, res, userId) {
+  const { error } = await supabase
+    .from('blocked_users')
+    .delete()
+    .eq('blocker_id', req.user.userId)
+    .eq('blocked_id', userId);
+
+  if (error) return sendError(res, 500, error.message);
+  sendJSON(res, 200, { success: true });
+}
+
 module.exports = {
   handleSearchUsers,
   handleGetProfile,
-  handleUpdateProfile
+  handleUpdateProfile,
+  handleBlockUser,
+  handleUnblockUser
 };

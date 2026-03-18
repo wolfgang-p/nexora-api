@@ -70,6 +70,40 @@ async function routeRequest(req, res) {
       return await convRoutes.handleGetMessages(req, res, req.url, id);
     }
 
+    if (method === 'GET' && urlParams === '/conversations/archived') {
+      return await convRoutes.handleListArchivedConversations(req, res);
+    }
+
+    if (method === 'PUT' && urlParams.match(/^\/conversations\/([^\/]+)\/archive$/)) {
+      const id = urlParams.split('/')[2];
+      return await convRoutes.handleArchiveConversation(req, res, id);
+    }
+
+    if (method === 'PUT' && urlParams.match(/^\/conversations\/([^\/]+)\/unarchive$/)) {
+      const id = urlParams.split('/')[2];
+      return await convRoutes.handleUnarchiveConversation(req, res, id);
+    }
+
+    if (method === 'DELETE' && urlParams.match(/^\/conversations\/([^\/]+)\/all$/)) {
+      const id = urlParams.split('/')[2];
+      return await convRoutes.handleDeleteForAll(req, res, id);
+    }
+
+    if (method === 'DELETE' && urlParams.match(/^\/conversations\/([^\/]+)$/)) {
+      const id = urlParams.split('/')[2];
+      return await convRoutes.handleDeleteForMe(req, res, id);
+    }
+
+    if (method === 'POST' && urlParams === '/users/block') {
+      const body = await parseJSONBody(req);
+      return await userRoutes.handleBlockUser(req, res, body);
+    }
+
+    if (method === 'DELETE' && urlParams.match(/^\/users\/([^\/]+)\/block$/)) {
+      const id = urlParams.split('/')[2];
+      return await userRoutes.handleUnblockUser(req, res, id);
+    }
+
     // MEDIA
     if (method === 'POST' && urlParams === '/media/upload') {
       if (req.headers['content-type'] && req.headers['content-type'].includes('application/json')) {

@@ -6,7 +6,9 @@ async function handleListConversations(req, res) {
   const { data: participants, error } = await supabase
     .from('conversation_participants')
     .select('conversation_id')
-    .eq('user_id', req.user.userId);
+    .eq('user_id', req.user.userId)
+    .is('deleted_at', null)
+    .is('archived_at', null);
 
   if (error) return sendError(res, 500, error.message);
   if (!participants || participants.length === 0) return sendJSON(res, 200, []);
@@ -118,8 +120,108 @@ async function handleGetMessages(req, res, urlObj, conversationId) {
   sendJSON(res, 200, messages);
 }
 
+async function handleArchiveConversation(req, res, conversationId) {
+  const { error } = await supabase
+    .from('conversation_participants')
+    .update({ archived_at: new Date().toISOString() })
+    .eq('conversation_id', conversationId)
+    .eq('user_id', req.user.userId);
+
+  if (error) return sendError(res, 500, error.message);
+  sendJSON(res, 200, { success: true });
+}
+
+async function handleUnarchiveConversation(req, res, conversationId) {
+  const { error } = await supabase
+    .from('conversation_participants')
+    .update({ archived_at: null })
+    .eq('conversation_id', conversationId)
+    .eq('user_id', req.user.userId);
+
+  if (error) return sendError(res, 500, error.message);
+  sendJSON(res, 200, { success: true });
+}
+
+async function handleDeleteForMe(req, res, conversationId) {
+  const { error } = await supabase
+    .from('conversation_participants')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('conversation_id', conversationId)
+    .eq('user_id', req.user.userId);
+
+  if (error) return sendError(res, 500, error.message);
+  sendJSON(res, 200, { success: true });
+}
+
+async function handleDeleteForAll(req, res, conversationId) {
+  // Verify requester is a participant
+  const { data: participant } = await supabase
+    .from('conversation_participants')
+    .select('user_id')
+    .eq('conversation_id', conversationId)
+    .eq('user_id', req.user.userId)
+    .single();
+
+  if (!participant) return sendError(res, 403, 'Not a participant');
+
+  // Delete all messages
+  await supabase
+    .from('messages')
+    .delete()
+    .eq('conversation_id', conversationId);
+
+  // Delete all participants
+  await supabase
+    .from('conversation_participants')
+    .delete()
+    .eq('conversation_id', conversationId);
+
+  // Delete the conversation
+  const { error } = await supabase
+    .from('conversations')
+    .delete()
+    .eq('id', conversationId);
+
+  if (error) return sendError(res, 500, error.message);
+  sendJSON(res, 200, { success: true });
+}
+
+async function handleListArchivedConversations(req, res) {
+  const { data: participants, error } = await supabase
+    .from('conversation_participants')
+    .select('conversation_id')
+    .eq('user_id', req.user.userId)
+    .not('archived_at', 'is', null)
+    .is('deleted_at', null);
+
+  if (error) return sendError(res, 500, error.message);
+  if (!participants || participants.length === 0) return sendJSON(res, 200, []);
+
+  const conversationIds = participants.map(p => p.conversation_id);
+
+  const { data: conversations, error: convError } = await supabase
+    .from('conversations')
+    .select(`
+      id, type, name, avatar_url, created_at,
+      conversation_participants (
+        user_id,
+        users (id, username, display_name, avatar_url, public_key, is_online)
+      )
+    `)
+    .in('id', conversationIds)
+    .order('created_at', { ascending: false });
+
+  if (convError) return sendError(res, 500, convError.message);
+  sendJSON(res, 200, conversations);
+}
+
 module.exports = {
   handleListConversations,
   handleCreateConversation,
-  handleGetMessages
+  handleGetMessages,
+  handleArchiveConversation,
+  handleUnarchiveConversation,
+  handleDeleteForMe,
+  handleDeleteForAll,
+  handleListArchivedConversations
 };
