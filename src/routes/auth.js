@@ -72,6 +72,8 @@ async function handleVerifyOTP(req, res, body) {
     token,
     isNewUser,
     accountType: user.account_type,
+    username: user.username,
+    displayName: user.display_name,
     userId: user.id
   });
 }
