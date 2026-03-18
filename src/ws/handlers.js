@@ -5,10 +5,21 @@ async function getConversationParticipants(conversationId, senderId) {
   const { data, error } = await supabase
     .from('conversation_participants')
     .select('user_id')
-    .eq('conversation_id', conversationId);
+    .eq('conversation_id', conversationId)
+    .is('deleted_at', null);
     
   if (error || !data) return [];
   return data.map(p => p.user_id).filter(id => id !== senderId);
+}
+
+async function isBlocked(senderId, receiverId) {
+  const { data } = await supabase
+    .from('blocked_users')
+    .select('id')
+    .eq('blocker_id', receiverId)
+    .eq('blocked_id', senderId)
+    .maybeSingle();
+  return !!data;
 }
 
 async function handleMessage(userId, data, ws) {
@@ -45,6 +56,8 @@ async function handleMessage(userId, data, ws) {
 
     const targetUserIds = await getConversationParticipants(data.conversationId, userId);
     for (const targetId of targetUserIds) {
+      const blocked = await isBlocked(userId, targetId);
+      if (blocked) continue;
       const receiverWs = getConnection(targetId);
       if (receiverWs && receiverWs.readyState === 1) {
         receiverWs.send(JSON.stringify(payload));
