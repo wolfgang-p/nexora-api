@@ -28,7 +28,24 @@ async function handleListConversations(req, res) {
     .order('created_at', { ascending: false });
 
   if (convError) return sendError(res, 500, convError.message);
-  sendJSON(res, 200, conversations);
+
+  // Fetch blocked user IDs for the current user
+  const { data: blockedRows } = await supabase
+    .from('blocked_users')
+    .select('blocked_id')
+    .eq('blocker_id', req.user.userId);
+  const blockedIds = new Set((blockedRows || []).map(b => b.blocked_id));
+
+  // Annotate each conversation with isBlocked
+  const annotated = (conversations || []).map(conv => {
+    const otherParticipants = (conv.conversation_participants || [])
+      .map(p => p.users)
+      .filter(u => u && u.id !== req.user.userId);
+    const isBlocked = conv.type === 'direct' && otherParticipants.some(u => blockedIds.has(u.id));
+    return { ...conv, isBlocked };
+  });
+
+  sendJSON(res, 200, annotated);
 }
 
 async function handleCreateConversation(req, res, body) {

@@ -76,6 +76,22 @@ async function handleUpdateProfile(req, res, body) {
   });
 }
 
+async function handleListBlockedUsers(req, res) {
+  const { data, error } = await supabase
+    .from('blocked_users')
+    .select('id, blocked_id, created_at, users!blocked_users_blocked_id_fkey(id, username, display_name, avatar_url)')
+    .eq('blocker_id', req.user.userId)
+    .order('created_at', { ascending: false });
+
+  if (error) return sendError(res, 500, error.message);
+  const result = (data || []).map(b => ({
+    id: b.id,
+    blockedAt: b.created_at,
+    user: b.users,
+  }));
+  sendJSON(res, 200, result);
+}
+
 async function handleBlockUser(req, res, body) {
   const { blocked_id } = body;
   if (!blocked_id) return sendError(res, 400, 'blocked_id is required');
@@ -107,6 +123,7 @@ module.exports = {
   handleSearchUsers,
   handleGetProfile,
   handleUpdateProfile,
+  handleListBlockedUsers,
   handleBlockUser,
   handleUnblockUser
 };

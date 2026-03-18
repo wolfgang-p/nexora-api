@@ -94,6 +94,10 @@ async function routeRequest(req, res) {
       return await convRoutes.handleDeleteForMe(req, res, id);
     }
 
+    if (method === 'GET' && urlParams === '/users/blocked') {
+      return await userRoutes.handleListBlockedUsers(req, res);
+    }
+
     if (method === 'POST' && urlParams === '/users/block') {
       const body = await parseJSONBody(req);
       return await userRoutes.handleBlockUser(req, res, body);
