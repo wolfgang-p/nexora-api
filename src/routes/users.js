@@ -32,7 +32,7 @@ async function handleSearchUsers(req, res, queryUrl) {
 async function handleGetProfile(req, res, id) {
   const { data: user, error } = await supabase
     .from('users')
-    .select('id, username, display_name, avatar_url, public_key, is_online, last_seen')
+    .select('id, username, display_name, avatar_url, public_key, is_online, last_seen, account_type, created_at')
     .eq('id', id)
     .single();
 
