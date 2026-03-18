@@ -85,7 +85,7 @@ const SETTINGS_DEFAULTS = {
   message_sound: true,
   group_notifications: true,
   show_preview: true,
-  theme: 'system',
+  theme: 'light',
   font_size: 'medium',
   chat_bubble_style: 'modern',
 };
