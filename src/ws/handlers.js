@@ -112,7 +112,57 @@ async function handleMessage(userId, data, ws) {
     }
   } else if (data.type === 'USER_STATUS') {
     // Basic presence logic
-    // You could broadcast to all active connections that have this user in their conversations
+  } else if (data.type === 'CALL_INITIATE') {
+    // Caller wants to start a call with a specific user
+    const receiverWs = getConnection(data.recipientId);
+    if (receiverWs && receiverWs.readyState === 1) {
+      receiverWs.send(JSON.stringify({
+        type: 'CALL_INCOMING',
+        callId: data.callId,
+        callerId: userId,
+        callerName: data.callerName,
+        callerAvatar: data.callerAvatar,
+        callType: data.callType, // 'audio' | 'video'
+      }));
+    } else {
+      // Recipient offline
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({
+          type: 'CALL_UNAVAILABLE',
+          callId: data.callId,
+          recipientId: data.recipientId,
+        }));
+      }
+    }
+  } else if (data.type === 'CALL_ACCEPT') {
+    const callerWs = getConnection(data.callerId);
+    if (callerWs && callerWs.readyState === 1) {
+      callerWs.send(JSON.stringify({
+        type: 'CALL_ACCEPTED',
+        callId: data.callId,
+        responderId: userId,
+      }));
+    }
+  } else if (data.type === 'CALL_REJECT' || data.type === 'CALL_END') {
+    const targetWs = getConnection(data.targetId);
+    if (targetWs && targetWs.readyState === 1) {
+      targetWs.send(JSON.stringify({
+        type: data.type === 'CALL_REJECT' ? 'CALL_REJECTED' : 'CALL_ENDED',
+        callId: data.callId,
+        senderId: userId,
+      }));
+    }
+  } else if (data.type === 'WEBRTC_OFFER' || data.type === 'WEBRTC_ANSWER' || data.type === 'WEBRTC_ICE_CANDIDATE') {
+    // Relay WebRTC signaling messages directly to the target peer
+    const targetWs = getConnection(data.targetId);
+    if (targetWs && targetWs.readyState === 1) {
+      targetWs.send(JSON.stringify({
+        type: data.type,
+        callId: data.callId,
+        senderId: userId,
+        payload: data.payload, // SDP or ICE candidate
+      }));
+    }
   }
 }
 
