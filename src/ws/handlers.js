@@ -95,6 +95,21 @@ async function handleMessage(userId, data, ws) {
         .eq('user_id', userId)
         .eq('conversation_id', data.conversationId);
     }
+  } else if (data.type === 'MESSAGE_DELETE') {
+    // Broadcast deletion to other participants
+    const targetUserIds = await getConversationParticipants(data.conversationId, userId);
+    const payload = {
+      type: 'MESSAGE_DELETED',
+      messageId: data.messageId,
+      conversationId: data.conversationId,
+      senderId: userId
+    };
+    for (const targetId of targetUserIds) {
+      const receiverWs = getConnection(targetId);
+      if (receiverWs && receiverWs.readyState === 1) {
+        receiverWs.send(JSON.stringify(payload));
+      }
+    }
   } else if (data.type === 'USER_STATUS') {
     // Basic presence logic
     // You could broadcast to all active connections that have this user in their conversations

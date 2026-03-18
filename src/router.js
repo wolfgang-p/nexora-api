@@ -89,6 +89,11 @@ async function routeRequest(req, res) {
       return await convRoutes.handleDeleteForAll(req, res, id);
     }
 
+    if (method === 'DELETE' && urlParams.match(/^\/messages\/([^\/]+)$/)) {
+      const id = urlParams.split('/')[2];
+      return await convRoutes.handleDeleteMessage(req, res, id);
+    }
+
     if (method === 'DELETE' && urlParams.match(/^\/conversations\/([^\/]+)$/)) {
       const id = urlParams.split('/')[2];
       return await convRoutes.handleDeleteForMe(req, res, id);

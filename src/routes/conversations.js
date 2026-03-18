@@ -232,10 +232,34 @@ async function handleListArchivedConversations(req, res) {
   sendJSON(res, 200, conversations);
 }
 
+async function handleDeleteMessage(req, res, messageId) {
+  // Verify the message belongs to the sender
+  const { data: msg, error: fetchErr } = await supabase
+    .from('messages')
+    .select('id, conversation_id, sender_id')
+    .eq('id', messageId)
+    .single();
+
+  if (fetchErr || !msg) return sendError(res, 404, 'Message not found');
+  if (msg.sender_id !== req.user.userId) return sendError(res, 403, 'Can only delete your own messages');
+
+  // Soft-delete: clear content, mark as deleted
+  const { error } = await supabase
+    .from('messages')
+    .update({ encrypted_content: null, message_type: 'deleted', media_url: null })
+    .eq('id', messageId);
+
+  if (error) return sendError(res, 500, error.message);
+
+  // Return conversation_id so the caller can broadcast
+  sendJSON(res, 200, { success: true, conversationId: msg.conversation_id, messageId: msg.id });
+}
+
 module.exports = {
   handleListConversations,
   handleCreateConversation,
   handleGetMessages,
+  handleDeleteMessage,
   handleArchiveConversation,
   handleUnarchiveConversation,
   handleDeleteForMe,
