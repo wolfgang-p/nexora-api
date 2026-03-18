@@ -99,6 +99,15 @@ async function routeRequest(req, res) {
       return await convRoutes.handleDeleteForMe(req, res, id);
     }
 
+    if (method === 'GET' && urlParams === '/users/settings') {
+      return await userRoutes.handleGetSettings(req, res);
+    }
+
+    if (method === 'PUT' && urlParams === '/users/settings') {
+      const body = await parseJSONBody(req);
+      return await userRoutes.handleUpdateSettings(req, res, body);
+    }
+
     if (method === 'GET' && urlParams === '/users/blocked') {
       return await userRoutes.handleListBlockedUsers(req, res);
     }

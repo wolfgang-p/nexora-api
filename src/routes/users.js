@@ -76,6 +76,51 @@ async function handleUpdateProfile(req, res, body) {
   });
 }
 
+const SETTINGS_DEFAULTS = {
+  show_online_status: true,
+  show_last_seen: true,
+  show_read_receipts: true,
+  show_profile_photo: 'everyone',
+  push_notifications: true,
+  message_sound: true,
+  group_notifications: true,
+  show_preview: true,
+  theme: 'system',
+  font_size: 'medium',
+  chat_bubble_style: 'modern',
+};
+
+async function handleGetSettings(req, res) {
+  const { data, error } = await supabase
+    .from('user_settings')
+    .select('*')
+    .eq('user_id', req.user.userId)
+    .maybeSingle();
+
+  if (error) return sendError(res, 500, error.message);
+  sendJSON(res, 200, data || { user_id: req.user.userId, ...SETTINGS_DEFAULTS });
+}
+
+async function handleUpdateSettings(req, res, body) {
+  const allowed = Object.keys(SETTINGS_DEFAULTS);
+  const updates = {};
+  for (const key of allowed) {
+    if (body[key] !== undefined) updates[key] = body[key];
+  }
+  if (Object.keys(updates).length === 0) return sendError(res, 400, 'Nothing to update');
+
+  updates.updated_at = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from('user_settings')
+    .upsert({ user_id: req.user.userId, ...updates }, { onConflict: 'user_id' })
+    .select()
+    .single();
+
+  if (error) return sendError(res, 500, error.message);
+  sendJSON(res, 200, data);
+}
+
 async function handleListBlockedUsers(req, res) {
   const { data, error } = await supabase
     .from('blocked_users')
@@ -123,6 +168,8 @@ module.exports = {
   handleSearchUsers,
   handleGetProfile,
   handleUpdateProfile,
+  handleGetSettings,
+  handleUpdateSettings,
   handleListBlockedUsers,
   handleBlockUser,
   handleUnblockUser
