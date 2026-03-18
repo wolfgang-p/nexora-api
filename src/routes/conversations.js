@@ -246,7 +246,7 @@ async function handleDeleteMessage(req, res, messageId) {
   // Soft-delete: clear content, mark as deleted
   const { error } = await supabase
     .from('messages')
-    .update({ encrypted_content: null, message_type: 'deleted', media_url: null })
+    .update({ encrypted_content: '', message_type: 'deleted', media_url: null })
     .eq('id', messageId);
 
   if (error) return sendError(res, 500, error.message);
