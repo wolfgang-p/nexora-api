@@ -96,7 +96,10 @@ async function handleCompleteProfile(req, res, body) {
     .select('*')
     .single();
 
-  if (error) return sendError(res, 500, error.message);
+  if (error) {
+    if (error.code === '23505') return sendError(res, 409, 'Username ist bereits vergeben');
+    return sendError(res, 500, error.message);
+  }
   sendJSON(res, 200, user);
 }
 
