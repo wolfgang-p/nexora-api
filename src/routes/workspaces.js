@@ -136,6 +136,41 @@ async function handleGetWorkspaceDetails(req, res, id) {
   }
 }
 
+async function handleUpdateWorkspace(req, res, id, body) {
+  try {
+    const { data: memCheck } = await supabase
+      .from('workspace_members')
+      .select('role')
+      .eq('workspace_id', id)
+      .eq('user_id', req.user.userId)
+      .single();
+      
+    if (!memCheck || !['owner', 'admin'].includes(memCheck.role)) {
+      return sendError(res, 403, 'Insufficient permissions');
+    }
+
+    const updates = {};
+    if (body.name !== undefined) updates.name = body.name;
+    if (body.description !== undefined) updates.description = body.description;
+    if (body.avatar_url !== undefined) updates.avatar_url = body.avatar_url;
+
+    if (Object.keys(updates).length === 0) return sendError(res, 400, 'No updates provided');
+
+    const { data, error } = await supabase
+      .from('workspaces')
+      .update(updates)
+      .eq('id', id)
+      .select('*')
+      .single();
+
+    if (error) return sendError(res, 500, error.message);
+    sendJSON(res, 200, data);
+  } catch(err) {
+    console.error('Update workspace error:', err);
+    sendError(res, 500, 'Error updating workspace');
+  }
+}
+
 async function handleGenerateJoinCode(req, res, id) {
   try {
     const { data: checkRole } = await supabase
@@ -338,6 +373,7 @@ module.exports = {
   handleListWorkspaces,
   handleCreateWorkspace,
   handleGetWorkspaceDetails,
+  handleUpdateWorkspace,
   handleGenerateJoinCode,
   handleJoinWorkspaceWithCode,
   handleGetChannelMessages,

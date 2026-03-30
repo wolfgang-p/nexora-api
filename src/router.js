@@ -124,8 +124,13 @@ async function routeRequest(req, res) {
       return await workspaceRoutes.handleJoinWorkspaceWithCode(req, res, body);
     }
     if (method === 'GET' && urlParams.match(/^\/workspaces\/([^\/]+)$/)) {
-      const id = urlParams.split('/')[2];
-      return await workspaceRoutes.handleGetWorkspaceDetails(req, res, id);
+      const match = urlParams.match(/^\/workspaces\/([^\/]+)$/);
+      return await workspaceRoutes.handleGetWorkspaceDetails(req, res, match[1]);
+    }
+    if (method === 'PUT' && urlParams.match(/^\/workspaces\/([^\/]+)$/)) {
+      const match = urlParams.match(/^\/workspaces\/([^\/]+)$/);
+      const body = await parseJSONBody(req);
+      return await workspaceRoutes.handleUpdateWorkspace(req, res, match[1], body);
     }
     if (method === 'POST' && urlParams.match(/^\/workspaces\/([^\/]+)\/join-code$/)) {
       const id = urlParams.split('/')[2];
