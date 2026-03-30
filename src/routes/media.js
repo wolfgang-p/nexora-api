@@ -1,7 +1,20 @@
 const { sendJSON, sendError } = require('../utils/response');
-const supabase = require('../db/supabase');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+
+// Public directory at project root: <repo>/public/images|audio|videos|files/
+const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
+
+function getSubdir(ext) {
+  const images = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic', 'heif'];
+  const audio = ['m4a', 'mp3', 'aac', 'ogg', 'wav', 'opus'];
+  const videos = ['mp4', 'mov', 'avi', 'webm', 'mkv'];
+  if (images.includes(ext)) return 'images';
+  if (audio.includes(ext)) return 'audio';
+  if (videos.includes(ext)) return 'videos';
+  return 'files';
+}
 
 async function handleMediaUpload(req, res) {
   const chunks = [];
@@ -13,30 +26,21 @@ async function handleMediaUpload(req, res) {
         return sendError(res, 400, 'No file provided in body');
       }
 
-      const fileExtension = req.headers['x-file-extension'] || 'bin';
-      const fileName = `${req.user.userId}-${Date.now()}.${fileExtension}`;
-      const filePath = path.join('/tmp', fileName); 
+      const ext = (req.headers['x-file-extension'] || 'bin').toLowerCase();
+      const subdir = getSubdir(ext);
+      const fileName = `${crypto.randomUUID()}.${ext}`;
+      const targetDir = path.join(PUBLIC_DIR, subdir);
+      const filePath = path.join(targetDir, fileName);
 
-      // Save locally to stream up
+      fs.mkdirSync(targetDir, { recursive: true });
       fs.writeFileSync(filePath, buffer);
-      
-      const fileBufferForUpload = fs.readFileSync(filePath);
-      const { data, error } = await supabase.storage
-        .from('media') // Assume 'media' bucket exists
-        .upload(fileName, fileBufferForUpload, {
-          contentType: req.headers['content-type'] || 'application/octet-stream',
-          upsert: true
-        });
 
-      if (error) {
-        fs.unlinkSync(filePath);
-        return sendError(res, 500, error.message);
-      }
+      // Build public URL using host from request
+      const host = req.headers['x-forwarded-host'] || req.headers['host'] || 'localhost:3001';
+      const protocol = req.headers['x-forwarded-proto'] || 'http';
+      const url = `${protocol}://${host}/public/${subdir}/${fileName}`;
 
-      fs.unlinkSync(filePath);
-
-      const { data: urlData } = supabase.storage.from('media').getPublicUrl(fileName);
-      sendJSON(res, 200, { url: urlData.publicUrl });
+      sendJSON(res, 200, { url });
     } catch (err) {
       sendError(res, 500, err.message);
     }

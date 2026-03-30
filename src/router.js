@@ -5,6 +5,18 @@ const convRoutes = require('./routes/conversations');
 const groupRoutes = require('./routes/groups');
 const mediaRoutes = require('./routes/media');
 const { sendJSON, sendError } = require('./utils/response');
+const fs = require('fs');
+const path = require('path');
+
+const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+
+const MIME_TYPES = {
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+  gif: 'image/gif', webp: 'image/webp', heic: 'image/heic', heif: 'image/heif',
+  m4a: 'audio/mp4', mp3: 'audio/mpeg', aac: 'audio/aac',
+  ogg: 'audio/ogg', wav: 'audio/wav', opus: 'audio/opus',
+  mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', avi: 'video/x-msvideo',
+};
 
 async function routeRequest(req, res) {
   const urlParams = req.url.split('?')[0]; 
@@ -17,6 +29,32 @@ async function routeRequest(req, res) {
   if (method === 'OPTIONS') {
     res.writeHead(204);
     return res.end();
+  }
+
+  // STATIC FILE SERVING
+  if (method === 'GET' && urlParams.startsWith('/public/')) {
+    const relativePath = urlParams.slice('/public/'.length);
+    // Prevent path traversal
+    const safePath = path.normalize(relativePath).replace(/^(\.\.(\/|\\|$))+/, '');
+    const filePath = path.join(PUBLIC_DIR, safePath);
+
+    if (!filePath.startsWith(PUBLIC_DIR)) {
+      res.writeHead(403);
+      return res.end();
+    }
+
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      res.writeHead(404);
+      return res.end('Not found');
+    }
+
+    const ext = filePath.split('.').pop()?.toLowerCase() || '';
+    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=31536000');
+    res.writeHead(200);
+    fs.createReadStream(filePath).pipe(res);
+    return;
   }
 
   try {

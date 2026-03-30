@@ -22,6 +22,17 @@ async function isBlocked(senderId, receiverId) {
   return !!data;
 }
 
+// Pending outgoing calls: callId → { callerUserId, recipientId, recipientName, timer }
+const pendingCalls = new Map();
+
+function cancelPendingCall(callId) {
+  const pending = pendingCalls.get(callId);
+  if (pending) {
+    clearTimeout(pending.timer);
+    pendingCalls.delete(callId);
+  }
+}
+
 async function handleMessage(userId, data, ws) {
   if (data.type === 'MESSAGE_SEND') {
 
@@ -99,7 +110,7 @@ async function handleMessage(userId, data, ws) {
         type: 'MESSAGE_SENT',
         messageId: msgData.id,
         conversationId: data.conversationId,
-        temporaryId: data.temporaryId // From frontend
+        temporaryId: data.temporaryId
       }));
     }
   } else if (data.type === 'MESSAGE_DELIVERED' || data.type === 'MESSAGE_READ' || 
@@ -109,12 +120,11 @@ async function handleMessage(userId, data, ws) {
     for (const targetId of targetUserIds) {
       const receiverWs = getConnection(targetId);
       if (receiverWs && receiverWs.readyState === 1) {
-        data.senderId = userId; // inject sender id
+        data.senderId = userId;
         receiverWs.send(JSON.stringify(data));
       }
     }
     
-    // update db (if MESSAGE_DELIVERED or MESSAGE_READ)
     if (data.type === 'MESSAGE_DELIVERED' && data.messageId) {
       await supabase.from('messages').update({ delivered_at: new Date() }).eq('id', data.messageId);
     } else if (data.type === 'MESSAGE_READ' && data.messageId) {
@@ -125,7 +135,6 @@ async function handleMessage(userId, data, ws) {
         .eq('conversation_id', data.conversationId);
     }
   } else if (data.type === 'MESSAGE_DELETE') {
-    // Broadcast deletion to other participants
     const targetUserIds = await getConversationParticipants(data.conversationId, userId);
     const payload = {
       type: 'MESSAGE_DELETED',
@@ -142,28 +151,53 @@ async function handleMessage(userId, data, ws) {
   } else if (data.type === 'USER_STATUS') {
     // Basic presence logic
   } else if (data.type === 'CALL_INITIATE') {
-    // Caller wants to start a call with a specific user
-    const receiverWs = getConnection(data.recipientId);
-    if (receiverWs && receiverWs.readyState === 1) {
-      receiverWs.send(JSON.stringify({
+    const recipientWs = getConnection(data.recipientId);
+
+    if (recipientWs && recipientWs.readyState === 1) {
+      // Recipient is online — deliver ring and start 30s timeout
+      recipientWs.send(JSON.stringify({
         type: 'CALL_INCOMING',
         callId: data.callId,
         callerId: userId,
         callerName: data.callerName,
         callerAvatar: data.callerAvatar,
-        callType: data.callType, // 'audio' | 'video'
+        callType: data.callType,
       }));
+
+      const recipientName = data.recipientName || 'Unbekannt';
+
+      const timer = setTimeout(() => {
+        pendingCalls.delete(data.callId);
+        // Notify caller: no answer after 30s
+        if (ws && ws.readyState === 1) {
+          ws.send(JSON.stringify({
+            type: 'CALL_UNAVAILABLE',
+            callId: data.callId,
+            recipientId: data.recipientId,
+            recipientName,
+          }));
+        }
+        // Cancel ring on recipient side
+        if (recipientWs && recipientWs.readyState === 1) {
+          recipientWs.send(JSON.stringify({ type: 'CALL_ENDED', callId: data.callId }));
+        }
+      }, 30000);
+
+      pendingCalls.set(data.callId, { callerUserId: userId, recipientId: data.recipientId, recipientName, timer });
     } else {
-      // Recipient offline
+      // Recipient offline — notify caller immediately
       if (ws && ws.readyState === 1) {
         ws.send(JSON.stringify({
           type: 'CALL_UNAVAILABLE',
           callId: data.callId,
           recipientId: data.recipientId,
+          recipientName: data.recipientName || 'Unbekannt',
         }));
       }
     }
   } else if (data.type === 'CALL_ACCEPT') {
+    cancelPendingCall(data.callId);
+
     const callerWs = getConnection(data.callerId);
     if (callerWs && callerWs.readyState === 1) {
       callerWs.send(JSON.stringify({
@@ -173,6 +207,8 @@ async function handleMessage(userId, data, ws) {
       }));
     }
   } else if (data.type === 'CALL_REJECT' || data.type === 'CALL_END') {
+    cancelPendingCall(data.callId);
+
     const targetWs = getConnection(data.targetId);
     if (targetWs && targetWs.readyState === 1) {
       targetWs.send(JSON.stringify({
@@ -182,14 +218,13 @@ async function handleMessage(userId, data, ws) {
       }));
     }
   } else if (data.type === 'WEBRTC_OFFER' || data.type === 'WEBRTC_ANSWER' || data.type === 'WEBRTC_ICE_CANDIDATE') {
-    // Relay WebRTC signaling messages directly to the target peer
     const targetWs = getConnection(data.targetId);
     if (targetWs && targetWs.readyState === 1) {
       targetWs.send(JSON.stringify({
         type: data.type,
         callId: data.callId,
         senderId: userId,
-        payload: data.payload, // SDP or ICE candidate
+        payload: data.payload,
       }));
     }
   }
