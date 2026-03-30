@@ -6,7 +6,7 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // GET /tasks — fetch all tasks for current user
 async function handleGetTasks(req, res) {
-  const userId = req.userId;
+  const userId = req.user?.userId;
   const { workspace_id, list_id, status, is_ai_generated } = req.queryParams || {};
 
   let query = supabase
@@ -31,7 +31,7 @@ async function handleGetTasks(req, res) {
 
 // GET /tasks/lists — fetch all task lists for current user
 async function handleGetLists(req, res) {
-  const userId = req.userId;
+  const userId = req.user?.userId;
   const { data, error } = await supabase
     .from('task_lists')
     .select('*, task_count:tasks(count)')
@@ -44,7 +44,7 @@ async function handleGetLists(req, res) {
 
 // POST /tasks/lists — create a new list
 async function handleCreateList(req, res, body) {
-  const userId = req.userId;
+  const userId = req.user?.userId;
   const { name, color, icon } = body;
   if (!name) return sendError(res, 400, 'Name required');
 
@@ -70,7 +70,7 @@ async function handleCreateList(req, res, body) {
 
 // PUT /tasks/lists/:id — update a list
 async function handleUpdateList(req, res, listId, body) {
-  const userId = req.userId;
+  const userId = req.user?.userId;
   const { data, error } = await supabase
     .from('task_lists')
     .update(body)
@@ -85,7 +85,7 @@ async function handleUpdateList(req, res, listId, body) {
 
 // DELETE /tasks/lists/:id — delete a list
 async function handleDeleteList(req, res, listId) {
-  const userId = req.userId;
+  const userId = req.user?.userId;
   const { error } = await supabase
     .from('task_lists')
     .delete()
@@ -98,7 +98,7 @@ async function handleDeleteList(req, res, listId) {
 
 // POST /tasks — create a task
 async function handleCreateTask(req, res, body) {
-  const userId = req.userId;
+  const userId = req.user?.userId;
   const {
     title, description, priority, status, due_date,
     list_id, workspace_id, conversation_id, assigned_to,
@@ -148,7 +148,7 @@ async function handleCreateTask(req, res, body) {
 
 // PUT /tasks/:id — update a task
 async function handleUpdateTask(req, res, taskId, body) {
-  const userId = req.userId;
+  const userId = req.user?.userId;
   const { data, error } = await supabase
     .from('tasks')
     .update(body)
@@ -167,7 +167,7 @@ async function handleUpdateTask(req, res, taskId, body) {
 
 // DELETE /tasks/:id
 async function handleDeleteTask(req, res, taskId) {
-  const userId = req.userId;
+  const userId = req.user?.userId;
   const { error } = await supabase
     .from('tasks')
     .delete()
@@ -180,7 +180,7 @@ async function handleDeleteTask(req, res, taskId) {
 
 // PUT /tasks/reorder — bulk reorder tasks
 async function handleReorderTasks(req, res, body) {
-  const userId = req.userId;
+  const userId = req.user?.userId;
   const { items } = body; // [{ id, position }]
   if (!items || !Array.isArray(items)) return sendError(res, 400, 'items array required');
 
@@ -194,7 +194,7 @@ async function handleReorderTasks(req, res, body) {
 
 // POST /tasks/ai-extract — extract tasks from message content using OpenAI
 async function handleAIExtract(req, res, body) {
-  const userId = req.userId;
+  const userId = req.user?.userId;
   const { content, source_message_id, conversation_id, workspace_id } = body;
 
   if (!content) return sendError(res, 400, 'Content required');
