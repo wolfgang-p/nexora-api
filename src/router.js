@@ -24,7 +24,10 @@ async function routeRequest(req, res) {
   const urlParams = req.url.split('?')[0]; 
   const method = req.method;
 
-  console.log(`[${new Date().toISOString()}] ${method} ${req.url}`);
+  console.log(`\n--- [${new Date().toISOString()}] Incoming Request ---`);
+  console.log(`Method: ${method}`);
+  console.log(`URL: ${req.url}`);
+  console.log(`Headers:`, JSON.stringify(req.headers));
 
   // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -62,17 +65,14 @@ async function routeRequest(req, res) {
   }
 
   try {
-    // PUBLIC ROUTES
-    if (method === 'GET' && urlParams === '/health') {
-      return sendJSON(res, 200, { status: 'OK' });
-    }
-
     if (method === 'POST' && urlParams === '/auth/request-otp') {
+      console.log('[Router] Matched /auth/request-otp');
       const body = await parseJSONBody(req);
       return await authRoutes.handleRequestOTP(req, res, body);
     }
 
     if (method === 'POST' && urlParams === '/auth/verify-otp') {
+      console.log('[Router] Matched /auth/verify-otp');
       const body = await parseJSONBody(req);
       return await authRoutes.handleVerifyOTP(req, res, body);
     }
@@ -110,10 +110,13 @@ async function routeRequest(req, res) {
 
     // WORKSPACE ROUTES
     if (method === 'GET' && urlParams === '/workspaces') {
+      console.log('[Router] Matched GET /workspaces');
       return await workspaceRoutes.handleListWorkspaces(req, res);
     }
     if (method === 'POST' && urlParams === '/workspaces') {
+      console.log('[Router] Matched POST /workspaces');
       const body = await parseJSONBody(req);
+      console.log('[Router] Body parsed for POST /workspaces:', body);
       return await workspaceRoutes.handleCreateWorkspace(req, res, body);
     }
     if (method === 'POST' && urlParams === '/workspaces/join') {
