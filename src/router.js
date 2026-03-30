@@ -6,6 +6,7 @@ const groupRoutes = require('./routes/groups');
 const mediaRoutes = require('./routes/media');
 const reactionRoutes = require('./routes/reactions');
 const workspaceRoutes = require('./routes/workspaces');
+const taskRoutes = require('./routes/tasks');
 const { sendJSON, sendError } = require('./utils/response');
 const fs = require('fs');
 const path = require('path');
@@ -191,6 +192,49 @@ async function routeRequest(req, res) {
     if (method === 'GET' && urlParams.match(/^\/channels\/([^\/]+)\/messages$/)) {
       const id = urlParams.split('/')[2];
       return await workspaceRoutes.handleGetChannelMessages(req, res, id);
+    }
+
+    // TASK ROUTES
+    if (method === 'GET' && urlParams === '/tasks') {
+      req.queryParams = Object.fromEntries(new URL(req.url, 'http://x').searchParams);
+      return await taskRoutes.handleGetTasks(req, res);
+    }
+    if (method === 'POST' && urlParams === '/tasks') {
+      const body = await parseJSONBody(req);
+      return await taskRoutes.handleCreateTask(req, res, body);
+    }
+    if (method === 'PUT' && urlParams.match(/^\/tasks\/reorder$/)) {
+      const body = await parseJSONBody(req);
+      return await taskRoutes.handleReorderTasks(req, res, body);
+    }
+    if (method === 'PUT' && urlParams.match(/^\/tasks\/([^\/]+)$/)) {
+      const taskId = urlParams.split('/')[2];
+      const body = await parseJSONBody(req);
+      return await taskRoutes.handleUpdateTask(req, res, taskId, body);
+    }
+    if (method === 'DELETE' && urlParams.match(/^\/tasks\/([^\/]+)$/)) {
+      const taskId = urlParams.split('/')[2];
+      return await taskRoutes.handleDeleteTask(req, res, taskId);
+    }
+    if (method === 'GET' && urlParams === '/tasks/lists') {
+      return await taskRoutes.handleGetLists(req, res);
+    }
+    if (method === 'POST' && urlParams === '/tasks/lists') {
+      const body = await parseJSONBody(req);
+      return await taskRoutes.handleCreateList(req, res, body);
+    }
+    if (method === 'PUT' && urlParams.match(/^\/tasks\/lists\/([^\/]+)$/)) {
+      const listId = urlParams.split('/')[3];
+      const body = await parseJSONBody(req);
+      return await taskRoutes.handleUpdateList(req, res, listId, body);
+    }
+    if (method === 'DELETE' && urlParams.match(/^\/tasks\/lists\/([^\/]+)$/)) {
+      const listId = urlParams.split('/')[3];
+      return await taskRoutes.handleDeleteList(req, res, listId);
+    }
+    if (method === 'POST' && urlParams === '/tasks/ai-extract') {
+      const body = await parseJSONBody(req);
+      return await taskRoutes.handleAIExtract(req, res, body);
     }
 
     // GROUP MANAGEMENT ROUTES (must come before generic conversation routes)
