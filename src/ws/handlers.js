@@ -4,6 +4,74 @@ const { Expo } = require('expo-server-sdk');
 
 const expo = new Expo();
 
+// ── AI Task Extraction ─────────────────────────────────────────────────────
+async function maybeExtractTask(content, senderUserId, recipientUserIds, context = {}) {
+  // Skip if content is empty, too short, or not a text context
+  if (!content || typeof content !== 'string' || content.length < 10) return;
+  // Skip if content looks encrypted (JSON blob)
+  if (content.startsWith('{') && content.includes('ciphertext')) return;
+  // Skip if OpenAI not configured
+  if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === 'YOUR_OPENAI_API_KEY_HERE') return;
+
+  try {
+    const OpenAI = require('openai');
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: `Du bist ein Task-Erkennungsassistent. Analysiere die Nachricht und erkenne NUR klare Aufgaben, Vorhaben oder To-Dos.
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt oder dem Wort null — ohne weitere Erklärung.
+
+Format wenn Aufgabe erkannt:
+{"title": "...", "priority": "low|medium|high", "for": "sender|recipient"}
+
+"for" = "sender" wenn der Sender etwas tun will/muss.
+"for" = "recipient" wenn der Empfänger etwas tun soll.
+
+Beispiele:
+"Morgen gehe ich einkaufen" → {"title":"Einkaufen gehen","priority":"medium","for":"sender"}
+"Kannnst du bis Freitag den Bericht schicken?" → {"title":"Bericht schicken","priority":"high","for":"recipient"}
+"Wie geht es dir?" → null
+"Das Wetter ist schön" → null
+"Ich muss noch die Rechnung bezahlen" → {"title":"Rechnung bezahlen","priority":"high","for":"sender"}`
+        },
+        { role: 'user', content }
+      ],
+      max_tokens: 80,
+      temperature: 0.1
+    });
+
+    const raw = (completion.choices[0]?.message?.content || '').trim();
+    if (!raw || raw === 'null') return;
+
+    let task;
+    try { task = JSON.parse(raw); } catch { return; }
+    if (!task?.title) return;
+
+    // Who gets the suggestion?
+    const targets = task.for === 'recipient' ? recipientUserIds : [senderUserId];
+
+    const suggestionPayload = JSON.stringify({
+      type: 'TASK_SUGGESTION',
+      title: task.title,
+      priority: task.priority || 'medium',
+      ...context
+    });
+
+    for (const targetId of targets) {
+      const ws = getConnection(targetId);
+      if (ws && ws.readyState === 1) {
+        ws.send(suggestionPayload);
+      }
+    }
+  } catch (err) {
+    console.warn('[AI Task] Extraction failed:', err.message);
+  }
+}
+
 async function sendPushNotification(pushToken, title, body, data = {}) {
   if (!Expo.isExpoPushToken(pushToken)) return;
   try {
@@ -171,6 +239,14 @@ async function handleMessage(userId, data, ws) {
         temporaryId: data.temporaryId
       }));
     }
+
+    // Async AI task extraction — fire and forget, doesn't block
+    maybeExtractTask(
+      data.encryptedContent,
+      userId,
+      targetUserIds,
+      { conversationId: data.conversationId, sourceMessageId: msgData.id }
+    ).catch(() => {});
   } else if (data.type === 'MESSAGE_DELIVERED' || data.type === 'MESSAGE_READ' || 
              data.type === 'TYPING_START' || data.type === 'TYPING_STOP') {
     const targetUserIds = await getConversationParticipants(data.conversationId, userId);
@@ -402,6 +478,14 @@ async function handleMessage(userId, data, ws) {
         temporaryId: data.temporaryId
       }));
     }
+
+    // Async AI task extraction for workspace messages
+    maybeExtractTask(
+      data.encryptedContent,
+      userId,
+      targetUserIds,
+      { workspaceChannelId: data.channelId, sourceMessageId: msgData.id }
+    ).catch(() => {});
   } else if (data.type === 'WS_TYPING_START' || data.type === 'WS_TYPING_STOP') {
     const targetUserIds = await getWorkspaceChannelParticipants(data.channelId, userId);
     const { data: user } = await supabase.from('users').select('display_name').eq('id', userId).single();
