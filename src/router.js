@@ -59,8 +59,29 @@ async function routeRequest(req, res) {
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
     res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'public, max-age=31536000');
-    res.writeHead(200);
-    fs.createReadStream(filePath).pipe(res);
+    
+    // Support Range requests (Required by iOS AVPlayer)
+    const stat = fs.statSync(filePath);
+    const range = req.headers.range;
+
+    if (range) {
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+      const chunksize = (end - start) + 1;
+      
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${stat.size}`);
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.setHeader('Content-Length', chunksize);
+      res.writeHead(206);
+      
+      fs.createReadStream(filePath, { start, end }).pipe(res);
+    } else {
+      res.setHeader('Content-Length', stat.size);
+      res.setHeader('Accept-Ranges', 'bytes');
+      res.writeHead(200);
+      fs.createReadStream(filePath).pipe(res);
+    }
     return;
   }
 
