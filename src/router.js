@@ -2,6 +2,7 @@ const { authenticate } = require('./middleware/auth');
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const convRoutes = require('./routes/conversations');
+const groupRoutes = require('./routes/groups');
 const mediaRoutes = require('./routes/media');
 const { sendJSON, sendError } = require('./utils/response');
 
@@ -63,6 +64,50 @@ async function routeRequest(req, res) {
     if (method === 'POST' && urlParams === '/conversations') {
       const body = await parseJSONBody(req);
       return await convRoutes.handleCreateConversation(req, res, body);
+    }
+
+    // GROUP MANAGEMENT ROUTES (must come before generic conversation routes)
+    if (method === 'GET' && urlParams.match(/^\/conversations\/([^\/]+)\/info$/)) {
+      const id = urlParams.split('/')[2];
+      return await groupRoutes.handleGetGroupInfo(req, res, id);
+    }
+
+    if (method === 'PUT' && urlParams.match(/^\/conversations\/([^\/]+)\/settings$/)) {
+      const id = urlParams.split('/')[2];
+      const body = await parseJSONBody(req);
+      return await groupRoutes.handleUpdateGroupSettings(req, res, id, body);
+    }
+
+    if (method === 'POST' && urlParams.match(/^\/conversations\/([^\/]+)\/participants$/)) {
+      const id = urlParams.split('/')[2];
+      const body = await parseJSONBody(req);
+      return await groupRoutes.handleAddMembers(req, res, id, body);
+    }
+
+    if (method === 'DELETE' && urlParams.match(/^\/conversations\/([^\/]+)\/participants\/([^\/]+)$/)) {
+      const parts = urlParams.split('/');
+      const convId = parts[2];
+      const userId = parts[4];
+      return await groupRoutes.handleRemoveMember(req, res, convId, userId);
+    }
+
+    if (method === 'PUT' && urlParams.match(/^\/conversations\/([^\/]+)\/participants\/([^\/]+)\/role$/)) {
+      const parts = urlParams.split('/');
+      const convId = parts[2];
+      const userId = parts[4];
+      const body = await parseJSONBody(req);
+      return await groupRoutes.handleChangeRole(req, res, convId, userId, body);
+    }
+
+    if (method === 'POST' && urlParams.match(/^\/conversations\/([^\/]+)\/leave$/)) {
+      const id = urlParams.split('/')[2];
+      return await groupRoutes.handleLeaveGroup(req, res, id);
+    }
+
+    if (method === 'PUT' && urlParams.match(/^\/conversations\/([^\/]+)$/) && !urlParams.includes('/archive') && !urlParams.includes('/unarchive')) {
+      const id = urlParams.split('/')[2];
+      const body = await parseJSONBody(req);
+      return await groupRoutes.handleUpdateGroup(req, res, id, body);
     }
 
     if (method === 'GET' && urlParams.match(/^\/conversations\/([^\/]+)\/messages$/)) {

@@ -18,9 +18,9 @@ async function handleListConversations(req, res) {
   const { data: conversations, error: convError } = await supabase
     .from('conversations')
     .select(`
-      id, type, name, avatar_url, created_at,
+      id, type, name, avatar_url, created_at, only_admins_send, only_admins_edit_info,
       conversation_participants (
-        user_id,
+        user_id, role,
         users (id, username, display_name, avatar_url, public_key, is_online)
       )
     `)
@@ -103,7 +103,8 @@ async function handleCreateConversation(req, res, body) {
 
   const participantInserts = participants.map(id => ({
     conversation_id: conversation.id,
-    user_id: id
+    user_id: id,
+    role: type === 'group' && id === req.user.userId ? 'owner' : 'member'
   }));
 
   const { error: partError } = await supabase
@@ -219,9 +220,9 @@ async function handleListArchivedConversations(req, res) {
   const { data: conversations, error: convError } = await supabase
     .from('conversations')
     .select(`
-      id, type, name, avatar_url, created_at,
+      id, type, name, avatar_url, created_at, only_admins_send, only_admins_edit_info,
       conversation_participants (
-        user_id,
+        user_id, role,
         users (id, username, display_name, avatar_url, public_key, is_online)
       )
     `)

@@ -24,17 +24,45 @@ async function isBlocked(senderId, receiverId) {
 
 async function handleMessage(userId, data, ws) {
   if (data.type === 'MESSAGE_SEND') {
-    
+
+    // Check only_admins_send restriction for groups
+    const { data: convSettings } = await supabase
+      .from('conversations')
+      .select('only_admins_send, type')
+      .eq('id', data.conversationId)
+      .single();
+
+    if (convSettings && convSettings.type === 'group' && convSettings.only_admins_send) {
+      const { data: participant } = await supabase
+        .from('conversation_participants')
+        .select('role')
+        .eq('conversation_id', data.conversationId)
+        .eq('user_id', userId)
+        .single();
+
+      if (participant && participant.role === 'member') {
+        if (ws && ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: 'ERROR', message: 'Only admins can send messages in this group' }));
+        }
+        return;
+      }
+    }
+
     // Save to DB
+    const insertData = {
+      conversation_id: data.conversationId,
+      sender_id: userId,
+      encrypted_content: data.encryptedContent,
+      message_type: data.messageType || 'text',
+      media_url: data.mediaUrl || null
+    };
+    if (data.messageType === 'voice' && data.duration) {
+      insertData.duration = data.duration;
+    }
+
     const { data: msgData, error } = await supabase
       .from('messages')
-      .insert({
-        conversation_id: data.conversationId,
-        sender_id: userId,
-        encrypted_content: data.encryptedContent,
-        message_type: data.messageType || 'text',
-        media_url: data.mediaUrl || null
-      })
+      .insert(insertData)
       .select('id, created_at')
       .single();
 
@@ -51,6 +79,7 @@ async function handleMessage(userId, data, ws) {
       encryptedContent: data.encryptedContent,
       messageType: data.messageType || 'text',
       mediaUrl: data.mediaUrl || null,
+      duration: data.duration || null,
       createdAt: msgData.created_at
     };
 
