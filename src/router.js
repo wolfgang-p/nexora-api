@@ -236,6 +236,10 @@ async function routeRequest(req, res) {
       const body = await parseJSONBody(req);
       return await taskRoutes.handleAIExtract(req, res, body);
     }
+    if (method === 'POST' && urlParams === '/tasks/ai-detect') {
+      const body = await parseJSONBody(req);
+      return await taskRoutes.handleAIDetect(req, res, body);
+    }
 
     // GROUP MANAGEMENT ROUTES (must come before generic conversation routes)
     if (method === 'GET' && urlParams.match(/^\/conversations\/([^\/]+)\/info$/)) {

@@ -270,6 +270,48 @@ Return ONLY a valid JSON array, no markdown, no explanation. If no tasks found, 
   }
 }
 
+// POST /tasks/ai-detect — detect task in text WITHOUT saving (for E2EE chats client-side use)
+async function handleAIDetect(req, res, body) {
+  const { content } = body;
+  if (!content || content.length < 10) return sendJSON(res, 200, null);
+  if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === 'YOUR_OPENAI_API_KEY_HERE') {
+    return sendJSON(res, 200, null);
+  }
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content: `Du bist ein Task-Erkennungsassistent. Erkenne NUR klare Aufgaben oder To-Dos.
+Antworte AUSSCHLIESSLICH mit einem JSON-Objekt oder dem Wort null.
+Format: {"title":"...","priority":"low|medium|high","for":"sender|recipient"}
+"for"="sender" wenn Sender selbst etwas tun will, "recipient" wenn Empf\u00e4nger.
+Beispiele: "Ich muss noch einkaufen" \u2192 {"title":"Einkaufen","priority":"medium","for":"sender"}
+"Schickst du mir die Datei?" \u2192 {"title":"Datei schicken","priority":"medium","for":"recipient"}
+"Wie geht es dir?" \u2192 null`
+        },
+        { role: 'user', content }
+      ],
+      max_tokens: 80,
+      temperature: 0.1
+    });
+
+    const raw = (completion.choices[0]?.message?.content || '').trim();
+    if (!raw || raw === 'null') return sendJSON(res, 200, null);
+
+    let task;
+    try { task = JSON.parse(raw); } catch { return sendJSON(res, 200, null); }
+    if (!task?.title) return sendJSON(res, 200, null);
+
+    return sendJSON(res, 200, { title: task.title, priority: task.priority || 'medium', for: task.for });
+  } catch (err) {
+    console.warn('AI Detect error:', err.message);
+    return sendJSON(res, 200, null);
+  }
+}
+
 module.exports = {
   handleGetTasks,
   handleGetLists,
@@ -280,5 +322,6 @@ module.exports = {
   handleUpdateTask,
   handleDeleteTask,
   handleReorderTasks,
-  handleAIExtract
+  handleAIExtract,
+  handleAIDetect
 };
