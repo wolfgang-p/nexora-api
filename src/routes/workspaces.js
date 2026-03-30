@@ -30,24 +30,33 @@ async function handleCreateWorkspace(req, res, body) {
   try {
     const { data: workspace, error: wsError } = await supabase
       .from('workspaces')
-      .insert({ name, description, avatar_url, owner_id: req.user.userId })
+      .insert({ 
+        name, 
+        description: description || null, 
+        avatar_url: avatar_url || null, 
+        owner_id: req.user.userId 
+      })
       .select('*')
       .single();
       
     if (wsError) return sendError(res, 500, wsError.message);
 
-    await supabase.from('workspace_members').insert({
+    const { error: memError } = await supabase.from('workspace_members').insert({
       workspace_id: workspace.id,
       user_id: req.user.userId,
       role: 'owner'
     });
+    
+    if (memError) return sendError(res, 500, memError.message);
 
-    await supabase.from('workspace_channels').insert({
+    const { error: chanError } = await supabase.from('workspace_channels').insert({
       workspace_id: workspace.id,
       name: 'general',
       type: 'text',
       created_by: req.user.userId
     });
+    
+    if (chanError) return sendError(res, 500, chanError.message);
 
     workspace.role = 'owner';
     sendJSON(res, 201, workspace);
