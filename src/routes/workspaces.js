@@ -153,6 +153,7 @@ async function handleUpdateWorkspace(req, res, id, body) {
     if (body.name !== undefined) updates.name = body.name;
     if (body.description !== undefined) updates.description = body.description;
     if (body.avatar_url !== undefined) updates.avatar_url = body.avatar_url;
+    if (body.announcement !== undefined) updates.announcement = body.announcement;
 
     if (Object.keys(updates).length === 0) return sendError(res, 400, 'No updates provided');
 
