@@ -175,6 +175,15 @@ async function routeRequest(req, res) {
       const parts = urlParams.split('/');
       return await workspaceRoutes.handleDeleteChannel(req, res, parts[2], parts[4]);
     }
+    if (method === 'PUT' && urlParams.match(/^\/workspaces\/([^\/]+)\/members\/([^\/]+)\/role$/)) {
+      const parts = urlParams.split('/');
+      const body = await parseJSONBody(req);
+      return await workspaceRoutes.handleUpdateMemberRole(req, res, parts[2], parts[4], body);
+    }
+    if (method === 'DELETE' && urlParams.match(/^\/workspaces\/([^\/]+)\/members\/([^\/]+)$/)) {
+      const parts = urlParams.split('/');
+      return await workspaceRoutes.handleRemoveMember(req, res, parts[2], parts[4]);
+    }
     if (method === 'GET' && urlParams.match(/^\/workspaces\/([^\/]+)\/files$/)) {
       const id = urlParams.split('/')[2];
       return await workspaceRoutes.handleGetWorkspaceFiles(req, res, id);

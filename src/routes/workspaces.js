@@ -454,6 +454,92 @@ async function handleDeleteChannel(req, res, workspaceId, channelId) {
   }
 }
 
+async function handleUpdateMemberRole(req, res, workspaceId, targetUserId, body) {
+  const { role } = body;
+  try {
+    if (!['admin', 'member', 'guest'].includes(role)) {
+      return sendError(res, 400, 'Ungültige Rolle');
+    }
+
+    const { data: myMember } = await supabase
+      .from('workspace_members')
+      .select('role')
+      .eq('workspace_id', workspaceId)
+      .eq('user_id', req.user.userId)
+      .single();
+
+    if (!myMember || myMember.role !== 'owner') {
+      return sendError(res, 403, 'Nur der Besitzer darf Rollen ändern');
+    }
+
+    const { data: targetMember } = await supabase
+      .from('workspace_members')
+      .select('role')
+      .eq('workspace_id', workspaceId)
+      .eq('user_id', targetUserId)
+      .single();
+
+    if (!targetMember) return sendError(res, 404, 'Benutzer nicht im Arbeitsbereich');
+    if (targetMember.role === 'owner') return sendError(res, 400, 'Besitzer-Rolle kann nicht geändert werden');
+
+    const { error } = await supabase
+      .from('workspace_members')
+      .update({ role })
+      .eq('workspace_id', workspaceId)
+      .eq('user_id', targetUserId);
+
+    if (error) return sendError(res, 500, error.message);
+    sendJSON(res, 200, { success: true, role });
+  } catch (err) {
+    console.error('Update member role err:', err);
+    sendError(res, 500, 'Error updating member role');
+  }
+}
+
+async function handleRemoveMember(req, res, workspaceId, targetUserId) {
+  try {
+    const { data: myMember } = await supabase
+      .from('workspace_members')
+      .select('role')
+      .eq('workspace_id', workspaceId)
+      .eq('user_id', req.user.userId)
+      .single();
+
+    if (!myMember || !['owner', 'admin'].includes(myMember.role)) {
+      return sendError(res, 403, 'Fehlende Berechtigung (Admin oder Owner erforderlich)');
+    }
+
+    if (req.user.userId === targetUserId) {
+      return sendError(res, 400, 'Du kannst dich nicht selbst entfernen');
+    }
+
+    const { data: targetMember } = await supabase
+      .from('workspace_members')
+      .select('role')
+      .eq('workspace_id', workspaceId)
+      .eq('user_id', targetUserId)
+      .single();
+
+    if (!targetMember) return sendError(res, 404, 'Benutzer nicht gefunden');
+    if (targetMember.role === 'owner') return sendError(res, 403, 'Besitzer können nicht entfernt werden');
+    if (myMember.role === 'admin' && targetMember.role === 'admin') {
+      return sendError(res, 403, 'Admins können keine anderen Admins entfernen');
+    }
+
+    const { error } = await supabase
+      .from('workspace_members')
+      .delete()
+      .eq('workspace_id', workspaceId)
+      .eq('user_id', targetUserId);
+
+    if (error) return sendError(res, 500, error.message);
+    sendJSON(res, 200, { success: true });
+  } catch (err) {
+    console.error('Remove member err:', err);
+    sendError(res, 500, 'Error removing member');
+  }
+}
+
 module.exports = {
   handleListWorkspaces,
   handleCreateWorkspace,
@@ -466,5 +552,7 @@ module.exports = {
   handleGetWorkspaceFiles,
   handleDeleteWorkspace,
   handleUpdateChannel,
-  handleDeleteChannel
+  handleDeleteChannel,
+  handleUpdateMemberRole,
+  handleRemoveMember
 };

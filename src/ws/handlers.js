@@ -1,5 +1,20 @@
 const { getConnection } = require('./connections');
 const supabase = require('../db/supabase');
+const { Expo } = require('expo-server-sdk');
+
+const expo = new Expo();
+
+async function sendPushNotification(pushToken, title, body, data = {}) {
+  if (!Expo.isExpoPushToken(pushToken)) return;
+  try {
+    const chunks = expo.chunkPushNotifications([{ to: pushToken, sound: 'default', title, body, data }]);
+    for (let chunk of chunks) {
+      await expo.sendPushNotificationsAsync(chunk);
+    }
+  } catch (err) {
+    console.error('Push Notification Error:', err);
+  }
+}
 
 async function getConversationParticipants(conversationId, senderId) {
   const { data, error } = await supabase
@@ -122,12 +137,28 @@ async function handleMessage(userId, data, ws) {
     };
 
     const targetUserIds = await getConversationParticipants(data.conversationId, userId);
+    const { data: pushUsers } = await supabase
+      .from('users')
+      .select('id, push_token')
+      .in('id', targetUserIds)
+      .not('push_token', 'is', null);
+
+    const pushMap = new Map((pushUsers || []).map(u => [u.id, u.push_token]));
+
     for (const targetId of targetUserIds) {
       const blocked = await isBlocked(userId, targetId);
       if (blocked) continue;
       const receiverWs = getConnection(targetId);
+      let isSent = false;
       if (receiverWs && receiverWs.readyState === 1) {
         receiverWs.send(JSON.stringify(payload));
+        isSent = true;
+      }
+
+      const pToken = pushMap.get(targetId);
+      if (pToken && !isSent) {
+        const bodyText = data.messageType === 'voice' ? '🎤 Sprachnachricht' : (data.messageType === 'image' ? '📷 Bild' : (data.messageType === 'file' ? '📁 Datei' : 'Eine neue Nachricht'));
+        sendPushNotification(pToken, "Neue Nachricht", bodyText, { conversationId: data.conversationId });
       }
     }
 
@@ -340,10 +371,25 @@ async function handleMessage(userId, data, ws) {
     };
 
     const targetUserIds = await getWorkspaceChannelParticipants(data.channelId, userId);
+    const { data: pushUsers } = await supabase
+      .from('users')
+      .select('id, push_token')
+      .in('id', targetUserIds)
+      .not('push_token', 'is', null);
+
+    const pushMap = new Map((pushUsers || []).map(u => [u.id, u.push_token]));
+
     for (const targetId of targetUserIds) {
       const receiverWs = getConnection(targetId);
+      let isSent = false;
       if (receiverWs && receiverWs.readyState === 1) {
         receiverWs.send(JSON.stringify(payload));
+        isSent = true;
+      }
+      const pToken = pushMap.get(targetId);
+      if (pToken && !isSent) {
+        const bodyText = data.messageType === 'voice' || data.messageType === 'audio' ? '🎤 Sprachnachricht' : (data.messageType === 'image' ? '📷 Bild' : (data.messageType === 'file' ? '📁 Datei' : 'Neue Nachricht im Arbeitsbereich'));
+        sendPushNotification(pToken, "Nexora (Arbeitsbereich)", bodyText, { channelId: data.channelId });
       }
     }
 
