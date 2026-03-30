@@ -40,7 +40,7 @@ migrations/
 ```
 
 ## Database Tables
-`users`, `otps`, `conversations`, `conversation_participants`, `messages`, `blocked_users`, `user_settings`
+`users`, `otps`, `conversations`, `conversation_participants`, `messages`, `blocked_users`, `user_settings`, `message_reactions`
 
 **Key columns added in migration 005:**
 - `conversation_participants.role` — enum: `owner`, `admin`, `member` (default: `member`)
@@ -72,6 +72,11 @@ migrations/
 - `DELETE /conversations/:id`, `DELETE /conversations/:id/all`
 - `DELETE /messages/:id` — soft delete
 
+### Reactions
+- `GET /messages/:id/reactions` — list reactions grouped by emoji
+- `POST /messages/:id/reactions` — add reaction `{ emoji }` (idempotent via unique constraint)
+- `DELETE /messages/:id/reactions/:emoji` — remove own reaction
+
 ### Group Management (`src/routes/groups.js`)
 - `GET /conversations/:id/info` — full group info with participants + roles
 - `PUT /conversations/:id` — update name/avatar (respects only_admins_edit_info)
@@ -88,6 +93,7 @@ migrations/
 Connect to `/ws`, send `{ type: 'AUTH', token }` within 5 seconds.
 
 **Chat**: MESSAGE_SEND (+ `duration` for voice), MESSAGE_RECEIVE, MESSAGE_SENT, MESSAGE_DELIVERED, MESSAGE_READ, MESSAGE_DELETE, MESSAGE_DELETED
+**Reactions**: REACTION_ADD `{ messageId, conversationId, emoji }`, REACTION_REMOVE `{ messageId, conversationId, emoji }` — broadcast to all participants; server persists to `message_reactions` table
 **Typing**: TYPING_START, TYPING_STOP
 **Group events**: GROUP_UPDATED, GROUP_SETTINGS_CHANGED, GROUP_MEMBER_ADDED, GROUP_MEMBER_REMOVED, GROUP_ROLE_CHANGED
 **Calls**: CALL_INITIATE, CALL_INCOMING, CALL_ACCEPT, CALL_ACCEPTED, CALL_REJECT, CALL_REJECTED, CALL_END, CALL_ENDED, CALL_UNAVAILABLE

@@ -227,6 +227,53 @@ async function handleMessage(userId, data, ws) {
         payload: data.payload,
       }));
     }
+  } else if (data.type === 'REACTION_ADD' || data.type === 'REACTION_REMOVE') {
+    const { messageId, conversationId, emoji } = data;
+    if (!messageId || !conversationId || !emoji) return;
+
+    // Verify sender is a participant
+    const { data: participant } = await supabase
+      .from('conversation_participants')
+      .select('user_id')
+      .eq('conversation_id', conversationId)
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (!participant) return;
+
+    if (data.type === 'REACTION_ADD') {
+      const { error } = await supabase
+        .from('message_reactions')
+        .insert({ message_id: messageId, user_id: userId, emoji });
+      if (error && error.code !== '23505') return; // ignore duplicate
+    } else {
+      await supabase
+        .from('message_reactions')
+        .delete()
+        .eq('message_id', messageId)
+        .eq('user_id', userId)
+        .eq('emoji', emoji);
+    }
+
+    // Broadcast to all conversation participants (including sender for multi-device)
+    const { data: participants } = await supabase
+      .from('conversation_participants')
+      .select('user_id')
+      .eq('conversation_id', conversationId);
+
+    const payload = JSON.stringify({
+      type: data.type,
+      messageId,
+      conversationId,
+      userId,
+      emoji,
+    });
+
+    for (const { user_id } of (participants || [])) {
+      const receiverWs = getConnection(user_id);
+      if (receiverWs && receiverWs.readyState === 1) {
+        receiverWs.send(payload);
+      }
+    }
   }
 }
 

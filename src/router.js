@@ -4,6 +4,7 @@ const userRoutes = require('./routes/users');
 const convRoutes = require('./routes/conversations');
 const groupRoutes = require('./routes/groups');
 const mediaRoutes = require('./routes/media');
+const reactionRoutes = require('./routes/reactions');
 const { sendJSON, sendError } = require('./utils/response');
 const fs = require('fs');
 const path = require('path');
@@ -203,6 +204,25 @@ async function routeRequest(req, res) {
     if (method === 'DELETE' && urlParams.match(/^\/users\/([^\/]+)\/block$/)) {
       const id = urlParams.split('/')[2];
       return await userRoutes.handleUnblockUser(req, res, id);
+    }
+
+    // REACTIONS
+    if (method === 'GET' && urlParams.match(/^\/messages\/([^\/]+)\/reactions$/)) {
+      const id = urlParams.split('/')[2];
+      return await reactionRoutes.handleGetReactions(req, res, id);
+    }
+
+    if (method === 'POST' && urlParams.match(/^\/messages\/([^\/]+)\/reactions$/)) {
+      const id = urlParams.split('/')[2];
+      const body = await parseJSONBody(req);
+      return await reactionRoutes.handleAddReaction(req, res, id, body);
+    }
+
+    if (method === 'DELETE' && urlParams.match(/^\/messages\/([^\/]+)\/reactions\/([^\/]+)$/)) {
+      const parts = urlParams.split('/');
+      const messageId = parts[2];
+      const emoji = parts[4];
+      return await reactionRoutes.handleRemoveReaction(req, res, messageId, emoji);
     }
 
     // MEDIA
