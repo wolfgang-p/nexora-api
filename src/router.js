@@ -157,10 +157,23 @@ async function routeRequest(req, res) {
       const id = urlParams.split('/')[2];
       return await workspaceRoutes.handleGenerateJoinCode(req, res, id);
     }
+    if (method === 'DELETE' && urlParams.match(/^\/workspaces\/([^\/]+)$/)) {
+      const match = urlParams.match(/^\/workspaces\/([^\/]+)$/);
+      return await workspaceRoutes.handleDeleteWorkspace(req, res, match[1]);
+    }
     if (method === 'POST' && urlParams.match(/^\/workspaces\/([^\/]+)\/channels$/)) {
       const id = urlParams.split('/')[2];
       const body = await parseJSONBody(req);
       return await workspaceRoutes.handleCreateChannel(req, res, id, body);
+    }
+    if (method === 'PUT' && urlParams.match(/^\/workspaces\/([^\/]+)\/channels\/([^\/]+)$/)) {
+      const parts = urlParams.split('/');
+      const body = await parseJSONBody(req);
+      return await workspaceRoutes.handleUpdateChannel(req, res, parts[2], parts[4], body);
+    }
+    if (method === 'DELETE' && urlParams.match(/^\/workspaces\/([^\/]+)\/channels\/([^\/]+)$/)) {
+      const parts = urlParams.split('/');
+      return await workspaceRoutes.handleDeleteChannel(req, res, parts[2], parts[4]);
     }
     if (method === 'GET' && urlParams.match(/^\/workspaces\/([^\/]+)\/files$/)) {
       const id = urlParams.split('/')[2];

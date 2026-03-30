@@ -370,6 +370,90 @@ async function handleGetWorkspaceFiles(req, res, id) {
   }
 }
 
+async function handleDeleteWorkspace(req, res, id) {
+  try {
+    const { data: memCheck } = await supabase
+      .from('workspace_members')
+      .select('role')
+      .eq('workspace_id', id)
+      .eq('user_id', req.user.userId)
+      .single();
+      
+    if (!memCheck || memCheck.role !== 'owner') {
+      return sendError(res, 403, 'Nur der Besitzer kann den Arbeitsbereich löschen.');
+    }
+
+    const { error } = await supabase
+      .from('workspaces')
+      .delete()
+      .eq('id', id);
+
+    if (error) return sendError(res, 500, error.message);
+    sendJSON(res, 200, { success: true });
+  } catch(err) {
+    console.error('Delete workspace error:', err);
+    sendError(res, 500, 'Error deleting workspace');
+  }
+}
+
+async function handleUpdateChannel(req, res, workspaceId, channelId, body) {
+  const { name } = body;
+  try {
+    const { data: memCheck } = await supabase
+      .from('workspace_members')
+      .select('role')
+      .eq('workspace_id', workspaceId)
+      .eq('user_id', req.user.userId)
+      .single();
+      
+    if (!memCheck || !['owner', 'admin'].includes(memCheck.role)) {
+      return sendError(res, 403, 'Fehlende Berechtigung zum Bearbeiten von Kanälen');
+    }
+
+    const { data: chRes, error: chErr } = await supabase
+      .from('workspace_channels')
+      .update({ name })
+      .eq('id', channelId)
+      .eq('workspace_id', workspaceId)
+      .select('*')
+      .single();
+      
+    if (chErr) return sendError(res, 500, chErr.message);
+
+    sendJSON(res, 200, chRes);
+  } catch(err) {
+    console.error('Update channel error:', err);
+    sendError(res, 500, 'Error updating channel');
+  }
+}
+
+async function handleDeleteChannel(req, res, workspaceId, channelId) {
+  try {
+    const { data: memCheck } = await supabase
+      .from('workspace_members')
+      .select('role')
+      .eq('workspace_id', workspaceId)
+      .eq('user_id', req.user.userId)
+      .single();
+      
+    if (!memCheck || !['owner', 'admin'].includes(memCheck.role)) {
+      return sendError(res, 403, 'Fehlende Berechtigung zum Löschen von Kanälen');
+    }
+
+    const { error } = await supabase
+      .from('workspace_channels')
+      .delete()
+      .eq('id', channelId)
+      .eq('workspace_id', workspaceId);
+
+    if (error) return sendError(res, 500, error.message);
+    sendJSON(res, 200, { success: true });
+  } catch(err) {
+    console.error('Delete channel error:', err);
+    sendError(res, 500, 'Error deleting channel');
+  }
+}
+
 module.exports = {
   handleListWorkspaces,
   handleCreateWorkspace,
@@ -379,5 +463,8 @@ module.exports = {
   handleJoinWorkspaceWithCode,
   handleGetChannelMessages,
   handleCreateChannel,
-  handleGetWorkspaceFiles
+  handleGetWorkspaceFiles,
+  handleDeleteWorkspace,
+  handleUpdateChannel,
+  handleDeleteChannel
 };
