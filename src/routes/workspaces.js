@@ -25,9 +25,15 @@ async function handleListWorkspaces(req, res) {
 
 async function handleCreateWorkspace(req, res, body) {
   const { name, description, avatar_url } = body;
-  if (!name) return sendError(res, 400, 'Workspace name is required');
+  console.log(`[WorkspaceCreate] Attempting to create workspace for user ${req.user.userId}`, body);
+
+  if (!name) {
+    console.error('[WorkspaceCreate] Failed: Workspace name is missing');
+    return sendError(res, 400, 'Workspace name is required');
+  }
   
   try {
+    console.log('[WorkspaceCreate] Inserting into workspaces table...');
     const { data: workspace, error: wsError } = await supabase
       .from('workspaces')
       .insert({ 
@@ -39,16 +45,26 @@ async function handleCreateWorkspace(req, res, body) {
       .select('*')
       .single();
       
-    if (wsError) return sendError(res, 500, wsError.message);
+    if (wsError) {
+      console.error('[WorkspaceCreate] Workspaces insert error:', wsError);
+      return sendError(res, 500, wsError.message);
+    }
+    console.log('[WorkspaceCreate] Workspaces insert success:', workspace.id);
 
+    console.log('[WorkspaceCreate] Inserting owner into workspace_members...');
     const { error: memError } = await supabase.from('workspace_members').insert({
       workspace_id: workspace.id,
       user_id: req.user.userId,
       role: 'owner'
     });
     
-    if (memError) return sendError(res, 500, memError.message);
+    if (memError) {
+      console.error('[WorkspaceCreate] workspace_members insert error:', memError);
+      return sendError(res, 500, memError.message);
+    }
+    console.log('[WorkspaceCreate] workspace_members insert success');
 
+    console.log('[WorkspaceCreate] Creating general channel...');
     const { error: chanError } = await supabase.from('workspace_channels').insert({
       workspace_id: workspace.id,
       name: 'general',
@@ -56,12 +72,17 @@ async function handleCreateWorkspace(req, res, body) {
       created_by: req.user.userId
     });
     
-    if (chanError) return sendError(res, 500, chanError.message);
+    if (chanError) {
+      console.error('[WorkspaceCreate] workspace_channels insert error:', chanError);
+      return sendError(res, 500, chanError.message);
+    }
+    console.log('[WorkspaceCreate] workspace_channels insert success');
 
     workspace.role = 'owner';
+    console.log('[WorkspaceCreate] Success! Returning workspace details.');
     sendJSON(res, 201, workspace);
   } catch (err) {
-    console.error('Create workspace error:', err);
+    console.error('[WorkspaceCreate] Catch block error:', err);
     sendError(res, 500, 'Error creating workspace');
   }
 }

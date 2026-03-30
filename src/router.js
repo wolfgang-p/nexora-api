@@ -24,6 +24,8 @@ async function routeRequest(req, res) {
   const urlParams = req.url.split('?')[0]; 
   const method = req.method;
 
+  console.log(`[${new Date().toISOString()}] ${method} ${req.url}`);
+
   // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'OPTIONS, GET, POST, PUT, DELETE');
