@@ -341,7 +341,8 @@ async function handleMessage(userId, data, ws) {
       message_type: data.messageType || 'text',
       media_url: data.mediaUrl || null,
       file_name: data.fileName || null,
-      file_size: data.fileSize || null
+      file_size: data.fileSize || null,
+      reply_to_id: data.replyToId || null
     };
 
     const { data: msgData, error } = await supabase
