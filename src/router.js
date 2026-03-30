@@ -262,15 +262,26 @@ async function routeRequest(req, res) {
       return await reactionRoutes.handleRemoveReaction(req, res, messageId, emoji);
     }
 
-    // MEDIA
-    if (method === 'POST' && urlParams === '/media/upload') {
-      if (req.headers['content-type'] && req.headers['content-type'].includes('application/json')) {
-        return sendError(res, 400, 'Media upload requires raw binary stream.');
-      }
-      return await mediaRoutes.handleMediaUpload(req, res);
-    }
+    const originalWriteHead = res.writeHead;
+    res.writeHead = function(statusCode, headers) {
+      console.log(`[${new Date().toISOString()}] Response: ${statusCode} ${req.method} ${req.url}`);
+      return originalWriteHead.apply(this, arguments);
+    };
 
-    sendError(res, 404, 'Not Found');
+    try {
+      // MEDIA
+      if (method === 'POST' && urlParams === '/media/upload') {
+        if (req.headers['content-type'] && req.headers['content-type'].includes('application/json')) {
+          return sendError(res, 400, 'Media upload requires raw binary stream.');
+        }
+        return await mediaRoutes.handleMediaUpload(req, res);
+      }
+
+      sendError(res, 404, 'Not Found');
+    } catch (e) {
+      console.error(`[${new Date().toISOString()}] ROUTE ERROR:`, e);
+      sendError(res, 500, 'Internal Server Error');
+    }
   } catch (err) {
     console.error('Unhandled Route Error:', err);
     sendError(res, 500, 'Internal Server Error');
