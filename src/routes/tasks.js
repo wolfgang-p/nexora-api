@@ -25,8 +25,8 @@ async function handleGetTasks(req, res) {
   if (is_ai_generated !== undefined) query = query.eq('is_ai_generated', is_ai_generated === 'true');
 
   const { data, error } = await query;
-  if (error) return sendError(res, 500, error.message);
-  return sendJSON(res, data || []);
+  if (error) { console.error('handleGetTasks error:', error); return sendError(res, 500, error.message); }
+  return sendJSON(res, 200, data || []);
 }
 
 // GET /tasks/lists — fetch all task lists for current user
@@ -38,8 +38,8 @@ async function handleGetLists(req, res) {
     .eq('owner_id', userId)
     .order('position', { ascending: true });
 
-  if (error) return sendError(res, 500, error.message);
-  return sendJSON(res, data || []);
+  if (error) { console.error('handleGetLists error:', error); return sendError(res, 500, error.message); }
+  return sendJSON(res, 200, data || []);
 }
 
 // POST /tasks/lists — create a new list
@@ -64,8 +64,8 @@ async function handleCreateList(req, res, body) {
     .select()
     .single();
 
-  if (error) return sendError(res, 500, error.message);
-  return sendJSON(res, data, 201);
+  if (error) { console.error('handleCreateList error:', error); return sendError(res, 500, error.message); }
+  return sendJSON(res, 201, data);
 }
 
 // PUT /tasks/lists/:id — update a list
@@ -79,8 +79,8 @@ async function handleUpdateList(req, res, listId, body) {
     .select()
     .single();
 
-  if (error) return sendError(res, 500, error.message);
-  return sendJSON(res, data);
+  if (error) { console.error('handleUpdateList error:', error); return sendError(res, 500, error.message); }
+  return sendJSON(res, 200, data);
 }
 
 // DELETE /tasks/lists/:id — delete a list
@@ -92,8 +92,8 @@ async function handleDeleteList(req, res, listId) {
     .eq('id', listId)
     .eq('owner_id', userId);
 
-  if (error) return sendError(res, 500, error.message);
-  return sendJSON(res, { success: true });
+  if (error) { console.error('handleDeleteList error:', error); return sendError(res, 500, error.message); }
+  return sendJSON(res, 200, { success: true });
 }
 
 // POST /tasks — create a task
@@ -142,8 +142,8 @@ async function handleCreateTask(req, res, body) {
     `)
     .single();
 
-  if (error) return sendError(res, 500, error.message);
-  return sendJSON(res, data, 201);
+  if (error) { console.error('handleCreateTask error:', error); return sendError(res, 500, error.message); }
+  return sendJSON(res, 201, data);
 }
 
 // PUT /tasks/:id — update a task
@@ -161,8 +161,8 @@ async function handleUpdateTask(req, res, taskId, body) {
     `)
     .single();
 
-  if (error) return sendError(res, 500, error.message);
-  return sendJSON(res, data);
+  if (error) { console.error('handleUpdateTask error:', error); return sendError(res, 500, error.message); }
+  return sendJSON(res, 200, data);
 }
 
 // DELETE /tasks/:id
@@ -174,8 +174,8 @@ async function handleDeleteTask(req, res, taskId) {
     .eq('id', taskId)
     .eq('owner_id', userId);
 
-  if (error) return sendError(res, 500, error.message);
-  return sendJSON(res, { success: true });
+  if (error) { console.error('handleDeleteTask error:', error); return sendError(res, 500, error.message); }
+  return sendJSON(res, 200, { success: true });
 }
 
 // PUT /tasks/reorder — bulk reorder tasks
@@ -189,7 +189,7 @@ async function handleReorderTasks(req, res, body) {
   );
 
   await Promise.all(updates);
-  return sendJSON(res, { success: true });
+  return sendJSON(res, 200, { success: true });
 }
 
 // POST /tasks/ai-extract — extract tasks from message content using OpenAI
@@ -263,7 +263,7 @@ Return ONLY a valid JSON array, no markdown, no explanation. If no tasks found, 
       if (data) saved.push(data);
     }
 
-    return sendJSON(res, { tasks: saved, count: saved.length });
+    return sendJSON(res, 200, { tasks: saved, count: saved.length });
   } catch (err) {
     console.error('AI Extract Error:', err);
     return sendError(res, 500, 'AI extraction failed');
