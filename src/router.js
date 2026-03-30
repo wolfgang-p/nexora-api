@@ -5,6 +5,7 @@ const convRoutes = require('./routes/conversations');
 const groupRoutes = require('./routes/groups');
 const mediaRoutes = require('./routes/media');
 const reactionRoutes = require('./routes/reactions');
+const workspaceRoutes = require('./routes/workspaces');
 const { sendJSON, sendError } = require('./utils/response');
 const fs = require('fs');
 const path = require('path');
@@ -103,6 +104,40 @@ async function routeRequest(req, res) {
     if (method === 'POST' && urlParams === '/conversations') {
       const body = await parseJSONBody(req);
       return await convRoutes.handleCreateConversation(req, res, body);
+    }
+
+    // WORKSPACE ROUTES
+    if (method === 'GET' && urlParams === '/workspaces') {
+      return await workspaceRoutes.handleListWorkspaces(req, res);
+    }
+    if (method === 'POST' && urlParams === '/workspaces') {
+      const body = await parseJSONBody(req);
+      return await workspaceRoutes.handleCreateWorkspace(req, res, body);
+    }
+    if (method === 'POST' && urlParams === '/workspaces/join') {
+      const body = await parseJSONBody(req);
+      return await workspaceRoutes.handleJoinWorkspaceWithCode(req, res, body);
+    }
+    if (method === 'GET' && urlParams.match(/^\/workspaces\/([^\/]+)$/)) {
+      const id = urlParams.split('/')[2];
+      return await workspaceRoutes.handleGetWorkspaceDetails(req, res, id);
+    }
+    if (method === 'POST' && urlParams.match(/^\/workspaces\/([^\/]+)\/join-code$/)) {
+      const id = urlParams.split('/')[2];
+      return await workspaceRoutes.handleGenerateJoinCode(req, res, id);
+    }
+    if (method === 'POST' && urlParams.match(/^\/workspaces\/([^\/]+)\/channels$/)) {
+      const id = urlParams.split('/')[2];
+      const body = await parseJSONBody(req);
+      return await workspaceRoutes.handleCreateChannel(req, res, id, body);
+    }
+    if (method === 'GET' && urlParams.match(/^\/workspaces\/([^\/]+)\/files$/)) {
+      const id = urlParams.split('/')[2];
+      return await workspaceRoutes.handleGetWorkspaceFiles(req, res, id);
+    }
+    if (method === 'GET' && urlParams.match(/^\/channels\/([^\/]+)\/messages$/)) {
+      const id = urlParams.split('/')[2];
+      return await workspaceRoutes.handleGetChannelMessages(req, res, id);
     }
 
     // GROUP MANAGEMENT ROUTES (must come before generic conversation routes)

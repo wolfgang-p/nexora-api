@@ -12,6 +12,33 @@ async function getConversationParticipants(conversationId, senderId) {
   return data.map(p => p.user_id).filter(id => id !== senderId);
 }
 
+async function getWorkspaceChannelParticipants(channelId, senderId) {
+  const { data: channel } = await supabase
+    .from('workspace_channels')
+    .select('workspace_id, is_private')
+    .eq('id', channelId)
+    .single();
+
+  if (!channel) return [];
+
+  if (channel.is_private) {
+    const { data } = await supabase
+      .from('workspace_channel_members')
+      .select('user_id')
+      .eq('channel_id', channelId);
+    if (!data) return [];
+    return data.map(p => p.user_id).filter(id => id !== senderId);
+  } else {
+    const { data } = await supabase
+      .from('workspace_members')
+      .select('user_id')
+      .eq('workspace_id', channel.workspace_id);
+    if (!data) return [];
+    return data.map(p => p.user_id).filter(id => id !== senderId);
+  }
+}
+
+
 async function isBlocked(senderId, receiverId) {
   const { data } = await supabase
     .from('blocked_users')
@@ -272,6 +299,75 @@ async function handleMessage(userId, data, ws) {
       const receiverWs = getConnection(user_id);
       if (receiverWs && receiverWs.readyState === 1) {
         receiverWs.send(payload);
+      }
+    }
+  } else if (data.type === 'WS_MESSAGE_SEND') {
+    // Workspace messaging
+    const insertData = {
+      channel_id: data.channelId,
+      sender_id: userId,
+      encrypted_content: data.encryptedContent,
+      message_type: data.messageType || 'text',
+      media_url: data.mediaUrl || null,
+      file_name: data.fileName || null,
+      file_size: data.fileSize || null
+    };
+
+    const { data: msgData, error } = await supabase
+      .from('workspace_messages')
+      .insert(insertData)
+      .select('*, sender:users(id, display_name, avatar_url, public_key)')
+      .single();
+
+    if (error) {
+      console.error('Error saving workspace message:', error);
+      return;
+    }
+
+    const payload = {
+      type: 'WS_MESSAGE_RECEIVE',
+      messageId: msgData.id,
+      channelId: data.channelId,
+      senderId: userId,
+      senderName: msgData.sender?.display_name,
+      senderAvatar: msgData.sender?.avatar_url,
+      encryptedContent: data.encryptedContent,
+      messageType: data.messageType || 'text',
+      mediaUrl: data.mediaUrl || null,
+      fileName: data.fileName || null,
+      fileSize: data.fileSize || null,
+      createdAt: msgData.created_at
+    };
+
+    const targetUserIds = await getWorkspaceChannelParticipants(data.channelId, userId);
+    for (const targetId of targetUserIds) {
+      const receiverWs = getConnection(targetId);
+      if (receiverWs && receiverWs.readyState === 1) {
+        receiverWs.send(JSON.stringify(payload));
+      }
+    }
+
+    if (ws && ws.readyState === 1) {
+      ws.send(JSON.stringify({
+        type: 'WS_MESSAGE_SENT',
+        messageId: msgData.id,
+        channelId: data.channelId,
+        temporaryId: data.temporaryId
+      }));
+    }
+  } else if (data.type === 'WS_TYPING_START' || data.type === 'WS_TYPING_STOP') {
+    const targetUserIds = await getWorkspaceChannelParticipants(data.channelId, userId);
+    const { data: user } = await supabase.from('users').select('display_name').eq('id', userId).single();
+    
+    for (const targetId of targetUserIds) {
+      const receiverWs = getConnection(targetId);
+      if (receiverWs && receiverWs.readyState === 1) {
+        receiverWs.send(JSON.stringify({
+          type: data.type,
+          channelId: data.channelId,
+          senderId: userId,
+          senderName: user?.display_name
+        }));
       }
     }
   }
