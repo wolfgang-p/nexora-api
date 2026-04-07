@@ -35,12 +35,24 @@ function setupWebSocketServer(server) {
             addConnection(userId, ws);
             // Mark online in DB
             await supabase.from('users').update({ is_online: true }).eq('id', userId);
-            ws.send(JSON.stringify({ type: 'AUTH_SUCCESS' }));
+            
+            // Assign a unique session ID and send it back
+            ws.sessionId = Math.random().toString(36).substring(2, 15);
+            ws.send(JSON.stringify({ type: 'AUTH_SUCCESS', sessionId: ws.sessionId }));
           } else {
             ws.send(JSON.stringify({ type: 'AUTH_FAILED' }));
             ws.close();
           }
           return;
+        }
+
+        if (data.type === 'KEY_SYNC') {
+            wss.clients.forEach(client => {
+                if (client.sessionId === data.targetSocketId && client.readyState === WebSocket.OPEN) {
+                    client.send(JSON.stringify({ type: 'KEY_SYNC', payload: data.payload }));
+                }
+            });
+            return;
         }
 
         if (!userId) {
