@@ -107,6 +107,7 @@ async function verifyOtp(req, res) {
 
   // Upsert user
   let user;
+  let justCreated = false;
   {
     const { data: existing } = await supabase
       .from('users').select('*').eq('phone_e164', phone).maybeSingle();
@@ -120,9 +121,12 @@ async function verifyOtp(req, res) {
         .select('*').single();
       if (insErr) return serverError(res, 'Could not create user', insErr);
       user = inserted;
+      justCreated = true;
       await supabase.from('user_settings').insert({ user_id: user.id });
     }
   }
+  // "new" means either freshly inserted or a previous row that never completed profile
+  const isNewUser = justCreated || !user.display_name;
 
   // Register device
   const pubKeyBuffer = Buffer.from(deviceInput.identity_public_key, 'base64');
@@ -165,6 +169,7 @@ async function verifyOtp(req, res) {
   created(res, {
     access_token: accessToken,
     refresh_token: refreshToken,
+    is_new_user: isNewUser,
     user: sanitizeUser(user),
     device: sanitizeDevice(device),
   });

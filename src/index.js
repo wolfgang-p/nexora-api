@@ -4,6 +4,7 @@ const http = require('node:http');
 const config = require('./config');
 const { handleRequest } = require('./router');
 const { attachWsServer } = require('./ws/server');
+const webhookWorker = require('./webhooks/worker');
 
 process.on('unhandledRejection', (err) => console.error('[unhandledRejection]', err));
 process.on('uncaughtException', (err) => console.error('[uncaughtException]', err));
@@ -26,10 +27,13 @@ server.listen(config.port, () => {
   console.log(`[koro-api] listening on :${config.port} (env=${config.isProd ? 'prod' : 'dev'})`);
   if (config.sms.devMode) console.warn('[koro-api] SMS provider not configured — OTPs will be logged to stderr');
   if (!config.corsOrigins.length) console.warn('[koro-api] CORS_ORIGINS empty — all origins allowed');
+  webhookWorker.start();
+  console.log('[koro-api] webhook retry worker started');
 });
 
 function shutdown(sig) {
   console.log(`[koro-api] ${sig}; shutting down`);
+  webhookWorker.stop();
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(1), 10_000).unref();
 }

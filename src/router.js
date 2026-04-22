@@ -19,6 +19,7 @@ const messagesRead = require('./messages/read');
 const messagesDelete = require('./messages/delete');
 const reactions = require('./reactions');
 const media = require('./media/upload');
+const mediaDownload = require('./media/download');
 const workspaces = require('./workspaces');
 const tasks = require('./tasks');
 const calls = require('./calls');
@@ -87,10 +88,11 @@ r('GET', '/messages/:id/reactions', reactions.list);
 r('POST', '/messages/:id/reactions', reactions.add);
 r('DELETE', '/messages/:id/reactions/:emoji', reactions.remove);
 
-// --- Media ---
-r('POST', '/media/upload-url', media.getUploadUrl);
+// --- Media (local disk) ---
+r('POST', '/media/upload', media.upload);
+r('GET', '/media/:id', mediaDownload.download);
 r('POST', '/media/:id/recipients', media.postRecipients);
-r('GET', '/media/:id/download-url', media.getDownloadUrl);
+r('GET', '/media/:id/key', media.getMyKey);
 
 // --- Workspaces ---
 r('GET', '/workspaces', workspaces.list);
