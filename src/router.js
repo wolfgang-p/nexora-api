@@ -1,0 +1,191 @@
+'use strict';
+
+const config = require('./config');
+const { notFound, ok, serverError } = require('./util/response');
+const { authenticate } = require('./auth/middleware');
+
+// Route modules
+const otp = require('./auth/otp');
+const pairingCreate = require('./pairing/create');
+const pairingClaim = require('./pairing/claim');
+const pairingDeliver = require('./pairing/deliver');
+const pairingPoll = require('./pairing/poll');
+const users = require('./users');
+const devices = require('./devices');
+const conversations = require('./conversations');
+const messagesSend = require('./messages/send');
+const messagesList = require('./messages/list');
+const messagesRead = require('./messages/read');
+const messagesDelete = require('./messages/delete');
+const reactions = require('./reactions');
+const media = require('./media/upload');
+const workspaces = require('./workspaces');
+const tasks = require('./tasks');
+const calls = require('./calls');
+const webhooksReg = require('./webhooks/register');
+const apiKeys = require('./api_keys');
+
+/**
+ * Tiny route matcher. Routes are tuples: [method, pattern, handler, { auth }]
+ * Pattern supports :param and :param+ (rest). Returns 404 if no match.
+ */
+const routes = [];
+
+function r(method, pattern, handler, opts = {}) {
+  const keys = [];
+  const regex = new RegExp('^' + pattern.replace(/\/:([^/]+)/g, (_, k) => {
+    keys.push(k);
+    return '/([^/]+)';
+  }) + '/?$');
+  routes.push({ method, regex, keys, handler, auth: opts.auth !== false });
+}
+
+// --- Health ---
+r('GET', '/health', async (req, res) => ok(res, { ok: true }), { auth: false });
+
+// --- Auth ---
+r('POST', '/auth/request-otp', otp.requestOtp, { auth: false });
+r('POST', '/auth/verify-otp', otp.verifyOtp, { auth: false });
+r('POST', '/auth/refresh', otp.refresh, { auth: false });
+r('POST', '/auth/logout', otp.logout);
+
+// --- Pairing ---
+r('POST', '/pairing/sessions', pairingCreate.createPairing, { auth: false });
+r('GET', '/pairing/sessions/:id', pairingPoll.pollPairing, { auth: false });
+r('POST', '/pairing/sessions/:id/claim', pairingClaim.claimPairing);
+r('POST', '/pairing/sessions/:id/deliver', pairingDeliver.deliverPairing);
+
+// --- Users ---
+r('GET', '/users/me', users.me);
+r('PUT', '/users/me', users.updateMe);
+r('GET', '/users/search', users.search);
+r('GET', '/users/:id', users.getUser);
+
+// --- Devices ---
+r('GET', '/devices', devices.listOwnDevices);
+r('PUT', '/devices/:id', devices.updateDevice);
+r('DELETE', '/devices/:id', devices.revokeDevice);
+r('GET', '/conversations/:id/devices', devices.listConversationDevices);
+
+// --- Conversations ---
+r('GET', '/conversations', conversations.listConversations);
+r('POST', '/conversations', conversations.createConversation);
+r('PUT', '/conversations/:id', conversations.updateConversation);
+r('POST', '/conversations/:id/members', conversations.addMembers);
+r('DELETE', '/conversations/:id/members/:userId', conversations.removeMember);
+r('PUT', '/conversations/:id/members/:userId/role', conversations.changeRole);
+
+// --- Messages ---
+r('POST', '/messages', messagesSend.sendMessage);
+r('GET', '/conversations/:id/messages', messagesList.listMessages);
+r('POST', '/messages/:id/delivered', messagesRead.markDelivered);
+r('POST', '/messages/:id/read', messagesRead.markRead);
+r('DELETE', '/messages/:id', messagesDelete.deleteMessage);
+
+// --- Reactions ---
+r('GET', '/messages/:id/reactions', reactions.list);
+r('POST', '/messages/:id/reactions', reactions.add);
+r('DELETE', '/messages/:id/reactions/:emoji', reactions.remove);
+
+// --- Media ---
+r('POST', '/media/upload-url', media.getUploadUrl);
+r('POST', '/media/:id/recipients', media.postRecipients);
+r('GET', '/media/:id/download-url', media.getDownloadUrl);
+
+// --- Workspaces ---
+r('GET', '/workspaces', workspaces.list);
+r('POST', '/workspaces', workspaces.create);
+r('GET', '/workspaces/:id', workspaces.get);
+r('PUT', '/workspaces/:id', workspaces.update);
+r('DELETE', '/workspaces/:id', workspaces.destroy);
+r('POST', '/workspaces/:id/invites', workspaces.createInvite);
+r('POST', '/workspaces/join', workspaces.joinByCode);
+
+// --- Tasks ---
+r('GET', '/tasks', tasks.list);
+r('POST', '/tasks', tasks.create);
+r('PUT', '/tasks/:id', tasks.update);
+r('DELETE', '/tasks/:id', tasks.destroy);
+r('GET', '/tasks/lists', tasks.listLists);
+r('POST', '/tasks/lists', tasks.createList);
+
+// --- Calls ---
+r('POST', '/calls', calls.start);
+r('POST', '/calls/:id/join', calls.join);
+r('POST', '/calls/:id/leave', calls.leave);
+r('POST', '/calls/:id/end', calls.end);
+
+// --- Webhooks ---
+r('GET', '/webhooks', webhooksReg.list);
+r('POST', '/webhooks', webhooksReg.create);
+r('DELETE', '/webhooks/:id', webhooksReg.destroy);
+
+// --- API keys ---
+r('GET', '/workspaces/:id/api-keys', apiKeys.list);
+r('POST', '/workspaces/:id/api-keys', apiKeys.create);
+r('DELETE', '/api-keys/:id', apiKeys.revoke);
+
+// ----------------------------------------------------------------------------
+
+function parseQuery(url) {
+  const q = {};
+  const i = url.indexOf('?');
+  if (i < 0) return { path: url, query: q };
+  const path = url.slice(0, i);
+  for (const pair of url.slice(i + 1).split('&')) {
+    if (!pair) continue;
+    const [k, v = ''] = pair.split('=');
+    q[decodeURIComponent(k)] = decodeURIComponent(v.replace(/\+/g, ' '));
+  }
+  return { path, query: q };
+}
+
+function corsHeaders(req) {
+  const origin = req.headers.origin;
+  const allowed = config.corsOrigins.length === 0 || config.corsOrigins.includes(origin);
+  const headers = {
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Koro-Signature',
+    'Access-Control-Max-Age': '86400',
+    'Vary': 'Origin',
+  };
+  if (allowed && origin) headers['Access-Control-Allow-Origin'] = origin;
+  return headers;
+}
+
+async function handleRequest(req, res) {
+  const cors = corsHeaders(req);
+  // Preflight
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, cors);
+    res.end();
+    return;
+  }
+  // Apply CORS to every response
+  for (const [k, v] of Object.entries(cors)) res.setHeader(k, v);
+
+  const { path, query } = parseQuery(req.url || '/');
+
+  for (const route of routes) {
+    if (route.method !== req.method) continue;
+    const m = path.match(route.regex);
+    if (!m) continue;
+    const params = {};
+    route.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
+
+    try {
+      if (route.auth) {
+        const authed = await authenticate(req, res);
+        if (!authed) return;
+      }
+      await route.handler(req, res, { params, query });
+    } catch (err) {
+      serverError(res, 'Internal error', err);
+    }
+    return;
+  }
+
+  notFound(res);
+}
+
+module.exports = { handleRequest };

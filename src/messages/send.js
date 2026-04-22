@@ -1,0 +1,196 @@
+'use strict';
+
+const { supabase } = require('../db/supabase');
+const { readJson, badRequest, created, forbidden, serverError } = require('../util/response');
+const { audit } = require('../util/audit');
+const { broadcastToDevices } = require('../ws/dispatch');
+
+const VALID_KINDS = ['text', 'image', 'voice', 'video', 'file', 'location'];
+
+/**
+ * POST /messages   (authed)
+ *
+ * The sender has already encrypted the plaintext once per recipient device.
+ * We validate membership + recipient set, persist envelope + sealed copies,
+ * and push to live WS connections of each recipient device.
+ *
+ * Body:
+ * {
+ *   conversation_id, kind,
+ *   reply_to_message_id?, media_object_id?,
+ *   recipients: [{ device_id, ciphertext: b64, nonce: b64 }, ...]
+ * }
+ */
+async function sendMessage(req, res) {
+  const body = await readJson(req).catch(() => null);
+  if (!body) return badRequest(res, 'Invalid JSON');
+
+  const {
+    conversation_id: convId,
+    kind,
+    reply_to_message_id: replyTo = null,
+    media_object_id: mediaId = null,
+    recipients,
+  } = body;
+
+  if (!convId || typeof convId !== 'string') return badRequest(res, 'conversation_id required');
+  if (!VALID_KINDS.includes(kind)) return badRequest(res, 'Invalid kind');
+  if (!Array.isArray(recipients) || recipients.length === 0) {
+    return badRequest(res, 'recipients[] required');
+  }
+  if (recipients.length > 500) return badRequest(res, 'Too many recipients');
+
+  // Sender must be an active member
+  const { data: me } = await supabase
+    .from('conversation_members')
+    .select('role')
+    .eq('conversation_id', convId)
+    .eq('user_id', req.auth.userId)
+    .is('left_at', null)
+    .maybeSingle();
+  if (!me) return forbidden(res, 'Not a conversation member');
+
+  // Respect only_admins_send
+  const { data: conv } = await supabase
+    .from('conversations')
+    .select('id, only_admins_send, deleted_at')
+    .eq('id', convId).maybeSingle();
+  if (!conv || conv.deleted_at) return forbidden(res, 'Conversation not found');
+  if (conv.only_admins_send && !['owner', 'admin'].includes(me.role)) {
+    return forbidden(res, 'Only admins may post here');
+  }
+
+  // Pull all valid recipient devices (active members × non-revoked devices)
+  const { data: validDevices } = await supabase
+    .from('devices')
+    .select('id, user_id, revoked_at, conversation_members!inner(conversation_id, left_at)')
+    .eq('conversation_members.conversation_id', convId)
+    .is('revoked_at', null)
+    .is('conversation_members.left_at', null);
+
+  // Supabase's inner join syntax above can be quirky; fall back to two queries.
+  // Simpler, explicit version:
+  const { data: members } = await supabase
+    .from('conversation_members')
+    .select('user_id')
+    .eq('conversation_id', convId)
+    .is('left_at', null);
+  const memberIds = (members || []).map((m) => m.user_id);
+  if (memberIds.length === 0) return forbidden(res, 'No active members');
+
+  const { data: devices } = await supabase
+    .from('devices')
+    .select('id')
+    .in('user_id', memberIds)
+    .is('revoked_at', null);
+  const allowedDeviceIds = new Set((devices || []).map((d) => d.id));
+
+  // Validate: every provided recipient must be an allowed device; no duplicates
+  const seen = new Set();
+  for (const r of recipients) {
+    if (!r?.device_id || !r?.ciphertext || !r?.nonce) {
+      return badRequest(res, 'recipient must have device_id, ciphertext, nonce');
+    }
+    if (!allowedDeviceIds.has(r.device_id)) {
+      return forbidden(res, `Device ${r.device_id} is not a valid recipient`);
+    }
+    if (seen.has(r.device_id)) return badRequest(res, 'Duplicate recipient device');
+    seen.add(r.device_id);
+  }
+
+  // Must cover the sender's other devices too (for self-sync), but we don't
+  // enforce "every member device". Senders can trim (e.g. for per-device
+  // encryption errors). However: if any member has zero recipient devices
+  // we refuse so that the message isn't silently delivered to nobody.
+  const coveredUsers = new Set();
+  {
+    const map = new Map((devices || []).map((d) => [d.id, d]));
+    for (const r of recipients) {
+      const d = map.get(r.device_id);
+      if (d) {
+        const u = (devices || []).find((x) => x.id === r.device_id);
+        if (u) {
+          // We already filtered by user_id; need to re-query to map device→user.
+        }
+      }
+    }
+  }
+  // Cheaper: query user_ids present in recipient set
+  {
+    const ids = Array.from(seen);
+    const { data: rcpDevices } = await supabase
+      .from('devices').select('id, user_id').in('id', ids);
+    for (const d of rcpDevices || []) coveredUsers.add(d.user_id);
+  }
+  for (const u of memberIds) {
+    if (!coveredUsers.has(u)) {
+      return badRequest(res, `No recipient device for member ${u}`);
+    }
+  }
+
+  // Insert envelope
+  const { data: msg, error: msgErr } = await supabase.from('messages').insert({
+    conversation_id: convId,
+    sender_user_id: req.auth.userId,
+    sender_device_id: req.auth.deviceId,
+    kind,
+    reply_to_message_id: replyTo,
+    media_object_id: mediaId,
+  }).select('*').single();
+  if (msgErr) return serverError(res, 'Could not create message', msgErr);
+
+  // Insert sealed copies
+  const rows = recipients.map((r) => ({
+    message_id: msg.id,
+    recipient_device_id: r.device_id,
+    ciphertext: Buffer.from(r.ciphertext, 'base64'),
+    nonce: Buffer.from(r.nonce, 'base64'),
+  }));
+  const { error: mrErr } = await supabase.from('message_recipients').insert(rows);
+  if (mrErr) {
+    // Roll back envelope on failure
+    await supabase.from('messages').delete().eq('id', msg.id);
+    return serverError(res, 'Could not persist recipients', mrErr);
+  }
+
+  // Fire WS push (async)
+  broadcastToDevices(
+    recipients.map((r) => r.device_id),
+    (deviceId) => {
+      const r = recipients.find((x) => x.device_id === deviceId);
+      return {
+        type: 'message.new',
+        message: envelopeFor(msg),
+        ciphertext: r.ciphertext,
+        nonce: r.nonce,
+      };
+    },
+  );
+
+  audit({
+    userId: req.auth.userId, deviceId: req.auth.deviceId,
+    action: 'message.create',
+    targetType: 'message', targetId: msg.id,
+    metadata: { conversation_id: convId, kind, recipient_count: recipients.length },
+    req,
+  });
+
+  created(res, { message: envelopeFor(msg) });
+}
+
+function envelopeFor(m) {
+  return {
+    id: m.id,
+    conversation_id: m.conversation_id,
+    sender_user_id: m.sender_user_id,
+    sender_device_id: m.sender_device_id,
+    kind: m.kind,
+    reply_to_message_id: m.reply_to_message_id,
+    media_object_id: m.media_object_id,
+    created_at: m.created_at,
+    edited_at: m.edited_at,
+    deleted_at: m.deleted_at,
+  };
+}
+
+module.exports = { sendMessage, envelopeFor };
