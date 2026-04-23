@@ -11,6 +11,7 @@ const pairingClaim = require('./pairing/claim');
 const pairingDeliver = require('./pairing/deliver');
 const pairingPoll = require('./pairing/poll');
 const pairingToken = require('./pairing/token');
+const pairingSync = require('./pairing/sync-history');
 const users = require('./users');
 const devices = require('./devices');
 const conversations = require('./conversations');
@@ -57,6 +58,7 @@ r('GET', '/pairing/sessions/:id', pairingPoll.pollPairing, { auth: false });
 r('POST', '/pairing/sessions/:id/claim', pairingClaim.claimPairing);
 r('POST', '/pairing/sessions/:id/deliver', pairingDeliver.deliverPairing);
 r('GET', '/pairing/sessions/:id/token', pairingToken.getPairingToken, { auth: false });
+r('POST', '/pairing/sessions/:id/sync-history', pairingSync.syncHistory);
 
 // --- Users ---
 r('GET', '/users/me', users.me);
