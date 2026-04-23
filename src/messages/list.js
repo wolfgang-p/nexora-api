@@ -54,8 +54,38 @@ async function listMessages(req, res, { params, query }) {
 
   const copyMap = new Map((myCopies || []).map((c) => [c.message_id, c]));
 
+  // Pull all reactions for these messages
+  const { data: rxns } = await supabase
+    .from('message_reactions')
+    .select('message_id, user_id, emoji, created_at')
+    .in('message_id', ids);
+
+  const rxnMap = new Map();
+  for (const r of rxns || []) {
+    if (!rxnMap.has(r.message_id)) rxnMap.set(r.message_id, []);
+    rxnMap.get(r.message_id).push({ user_id: r.user_id, emoji: r.emoji, created_at: r.created_at });
+  }
+
+  // Aggregate delivery/read across other-than-self devices so the sender can
+  // see "delivered to SOMEONE else" and "read by SOMEONE else".
+  const { data: aggRows } = await supabase
+    .from('message_recipients')
+    .select('message_id, delivered_at, read_at, recipient_device_id')
+    .in('message_id', ids);
+
+  const aggMap = new Map();
+  const authDevice = req.auth.deviceId;
+  for (const r of aggRows || []) {
+    if (r.recipient_device_id === authDevice) continue; // skip self-device row
+    const cur = aggMap.get(r.message_id) || { anyDelivered: false, anyRead: false };
+    if (r.delivered_at) cur.anyDelivered = true;
+    if (r.read_at) cur.anyRead = true;
+    aggMap.set(r.message_id, cur);
+  }
+
   const out = msgs.map((m) => {
     const c = copyMap.get(m.id);
+    const agg = aggMap.get(m.id);
     return {
       ...envelopeFor(m),
       // null means "this device wasn't a recipient" (probably enrolled later)
@@ -63,6 +93,9 @@ async function listMessages(req, res, { params, query }) {
       nonce: c?.nonce ?? null,
       delivered_at: c?.delivered_at || null,
       read_at: c?.read_at || null,
+      any_delivered_at: agg?.anyDelivered || false,
+      any_read_at: agg?.anyRead || false,
+      reactions: rxnMap.get(m.id) || [],
     };
   });
 

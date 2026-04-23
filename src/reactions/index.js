@@ -52,7 +52,10 @@ async function broadcastReaction(conversationId, messageId, action, userId, emoj
     .in('user_id', memberIds).is('revoked_at', null);
   broadcastToDevices((devices || []).map((d) => d.id), () => ({
     type: action === 'added' ? 'reaction.added' : 'reaction.removed',
-    message_id: messageId, user_id: userId, emoji,
+    message_id: messageId,
+    conversation_id: conversationId,
+    user_id: userId,
+    emoji,
   }));
 }
 
