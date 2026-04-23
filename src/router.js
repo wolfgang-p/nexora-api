@@ -94,7 +94,10 @@ r('DELETE', '/messages/:id/reactions/:emoji', reactions.remove);
 
 // --- Media (local disk) ---
 r('POST', '/media/upload', media.upload);
-r('GET', '/media/:id', mediaDownload.download);
+// Avatars live in /media/:id with conversation_id=NULL and need to be
+// accessible from <img src> tags (no Authorization header possible). The
+// handler itself enforces auth when the object belongs to a conversation.
+r('GET', '/media/:id', mediaDownload.download, { auth: false });
 r('POST', '/media/:id/recipients', media.postRecipients);
 r('GET', '/media/:id/key', media.getMyKey);
 
