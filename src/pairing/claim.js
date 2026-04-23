@@ -39,7 +39,7 @@ async function claimPairing(req, res, { params }) {
     ok: true,
     new_device_kind: sess.new_device_kind,
     new_device_label: sess.new_device_label,
-    ephemeral_public_key: Buffer.from(sess.ephemeral_public_key).toString('base64'),
+    ephemeral_public_key: sess.ephemeral_public_key,
   });
 }
 

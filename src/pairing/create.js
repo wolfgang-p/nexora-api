@@ -35,7 +35,7 @@ async function createPairing(req, res) {
     pairing_code: code,
     new_device_kind: kind,
     new_device_label: label,
-    ephemeral_public_key: ephBuf,
+    ephemeral_public_key: eph,
     expires_at: expires,
   }).select('id, pairing_code, expires_at').single();
   if (error) return serverError(res, 'Could not create pairing session', error);

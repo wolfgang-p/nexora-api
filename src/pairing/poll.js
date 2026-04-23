@@ -23,8 +23,8 @@ async function pollPairing(req, res, { params }) {
   if (sess.completed_at) {
     return ok(res, {
       status: 'completed',
-      ciphertext: Buffer.from(sess.ciphertext).toString('base64'),
-      nonce: Buffer.from(sess.nonce).toString('base64'),
+      ciphertext: sess.ciphertext,
+      nonce: sess.nonce,
       device_id: sess.resulting_device_id,
       user_id: sess.claimed_by_user,
     });

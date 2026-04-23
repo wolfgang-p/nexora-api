@@ -47,7 +47,7 @@ async function listConversationDevices(req, res, { params }) {
     kind: d.kind,
     label: d.label,
     fingerprint: d.fingerprint,
-    identity_public_key: Buffer.from(d.identity_public_key).toString('base64'),
+    identity_public_key: d.identity_public_key,
   }));
   ok(res, { devices: out });
 }

@@ -129,7 +129,8 @@ async function verifyOtp(req, res) {
   const isNewUser = justCreated || !user.display_name;
 
   // Register device
-  const pubKeyBuffer = Buffer.from(deviceInput.identity_public_key, 'base64');
+  const pubKeyB64 = String(deviceInput.identity_public_key || '');
+  const pubKeyBuffer = Buffer.from(pubKeyB64, 'base64');
   if (pubKeyBuffer.length < 16 || pubKeyBuffer.length > 256) {
     return badRequest(res, 'identity_public_key has unreasonable length');
   }
@@ -140,7 +141,7 @@ async function verifyOtp(req, res) {
     user_id: user.id,
     kind: deviceInput.kind,
     label: deviceInput.label || null,
-    identity_public_key: pubKeyBuffer,
+    identity_public_key: pubKeyB64,
     fingerprint,
     user_agent: deviceInput.user_agent || req.headers['user-agent'] || null,
     ip_hint: req.socket?.remoteAddress || null,

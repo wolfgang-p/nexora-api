@@ -34,8 +34,8 @@ async function deleteMessage(req, res, { params }) {
 
   // Wipe ciphertexts to truly remove content (recipients keep empty rows to track IDs)
   await supabase.from('message_recipients').update({
-    ciphertext: Buffer.alloc(0),
-    nonce: Buffer.alloc(0),
+    ciphertext: '',
+    nonce: '',
   }).eq('message_id', params.id);
 
   // Notify every active member device

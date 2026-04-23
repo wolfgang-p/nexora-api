@@ -59,8 +59,8 @@ async function listMessages(req, res, { params, query }) {
     return {
       ...envelopeFor(m),
       // null means "this device wasn't a recipient" (probably enrolled later)
-      ciphertext: c ? Buffer.from(c.ciphertext).toString('base64') : null,
-      nonce: c ? Buffer.from(c.nonce).toString('base64') : null,
+      ciphertext: c?.ciphertext ?? null,
+      nonce: c?.nonce ?? null,
       delivered_at: c?.delivered_at || null,
       read_at: c?.read_at || null,
     };

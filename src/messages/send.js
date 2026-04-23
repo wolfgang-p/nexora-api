@@ -139,12 +139,12 @@ async function sendMessage(req, res) {
   }).select('*').single();
   if (msgErr) return serverError(res, 'Could not create message', msgErr);
 
-  // Insert sealed copies
+  // Insert sealed copies (stored as base64 strings)
   const rows = recipients.map((r) => ({
     message_id: msg.id,
     recipient_device_id: r.device_id,
-    ciphertext: Buffer.from(r.ciphertext, 'base64'),
-    nonce: Buffer.from(r.nonce, 'base64'),
+    ciphertext: r.ciphertext,
+    nonce: r.nonce,
   }));
   const { error: mrErr } = await supabase.from('message_recipients').insert(rows);
   if (mrErr) {

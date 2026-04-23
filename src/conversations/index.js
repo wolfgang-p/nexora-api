@@ -32,10 +32,28 @@ async function listConversations(req, res) {
       .from('messages').select('id, conversation_id, kind, created_at, sender_user_id')
       .in('conversation_id', convIds)
       .is('deleted_at', null)
-      .order('created_at', { ascending: false })
-      .limit(convIds.length * 1);
+      .order('created_at', { ascending: false });
     for (const m of msgs || []) {
       if (!latestByConv.has(m.conversation_id)) latestByConv.set(m.conversation_id, m);
+    }
+  }
+
+  // For direct chats we need the peer's display name + avatar (so the UI can
+  // show "Marlene" instead of a bare conversation row).
+  let peerByConv = new Map();
+  const directConvIds = memberships
+    .filter((m) => m.conversation?.kind === 'direct' && !m.conversation.deleted_at)
+    .map((m) => m.conversation_id);
+
+  if (directConvIds.length > 0) {
+    const { data: rows } = await supabase
+      .from('conversation_members')
+      .select('conversation_id, user_id, user:users!inner(id, username, display_name, avatar_url)')
+      .in('conversation_id', directConvIds)
+      .is('left_at', null)
+      .neq('user_id', req.auth.userId);
+    for (const r of rows || []) {
+      if (r.user) peerByConv.set(r.conversation_id, r.user);
     }
   }
 
@@ -51,6 +69,7 @@ async function listConversations(req, res) {
       last_read_message_id: m.last_read_message_id,
       last_read_at: m.last_read_at,
       last_message: latestByConv.get(m.conversation_id) || null,
+      peer: peerByConv.get(m.conversation_id) || null,
     }));
 
   ok(res, { conversations: out });

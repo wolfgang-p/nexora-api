@@ -35,10 +35,8 @@ async function deliverPairing(req, res, { params }) {
   if (!sess.claimed_by_user) return forbidden(res, 'Session not claimed');
   if (sess.claimed_by_user !== req.auth.userId) return forbidden(res, 'Not your session');
 
-  const ciphertext = Buffer.from(body.ciphertext, 'base64');
-  const nonce = Buffer.from(body.nonce, 'base64');
-  const newPk = Buffer.from(body.new_device_public_key, 'base64');
-  if (newPk.length < 16 || newPk.length > 256) {
+  const newPkBuf = Buffer.from(body.new_device_public_key, 'base64');
+  if (newPkBuf.length < 16 || newPkBuf.length > 256) {
     return badRequest(res, 'new_device_public_key has unreasonable length');
   }
 
@@ -47,14 +45,15 @@ async function deliverPairing(req, res, { params }) {
     user_id: sess.claimed_by_user,
     kind: sess.new_device_kind,
     label: sess.new_device_label,
-    identity_public_key: newPk,
-    fingerprint: deviceFingerprint(newPk),
+    identity_public_key: body.new_device_public_key,
+    fingerprint: deviceFingerprint(newPkBuf),
   }).select('id, fingerprint').single();
   if (devErr) return serverError(res, 'Could not register device', devErr);
 
   // Stamp the session
   const { error } = await supabase.from('pairing_sessions').update({
-    ciphertext, nonce,
+    ciphertext: body.ciphertext,
+    nonce: body.nonce,
     resulting_device_id: device.id,
     completed_at: new Date().toISOString(),
   }).eq('id', params.id);

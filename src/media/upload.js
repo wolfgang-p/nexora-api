@@ -133,8 +133,8 @@ async function postRecipients(req, res, { params }) {
   const rows = body.recipients.map((r) => ({
     media_object_id: params.id,
     recipient_device_id: r.device_id,
-    wrapped_key: Buffer.from(r.wrapped_key, 'base64'),
-    nonce: Buffer.from(r.nonce, 'base64'),
+    wrapped_key: r.wrapped_key,
+    nonce: r.nonce,
   }));
   const { error } = await supabase.from('media_recipients').insert(rows);
   if (error) return serverError(res, 'Could not store recipients', error);
@@ -155,8 +155,8 @@ async function getMyKey(req, res, { params }) {
     .maybeSingle();
   if (!rcp) return notFound(res, 'No wrapped key for this device');
   ok(res, {
-    wrapped_key: Buffer.from(rcp.wrapped_key).toString('base64'),
-    nonce: Buffer.from(rcp.nonce).toString('base64'),
+    wrapped_key: rcp.wrapped_key,
+    nonce: rcp.nonce,
   });
 }
 
