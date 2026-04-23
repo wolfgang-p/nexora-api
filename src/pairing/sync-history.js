@@ -3,7 +3,6 @@
 const { supabase } = require('../db/supabase');
 const { ok, forbidden, serverError } = require('../util/response');
 const nacl = require('tweetnacl');
-const util = require('tweetnacl-util');
 
 /**
  * POST /pairing/sessions/:id/sync-history (authed as new device)
