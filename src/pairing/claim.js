@@ -61,6 +61,7 @@ async function claimPairing(req, res, { params }) {
     new_device_kind: sess.new_device_kind,
     new_device_label: sess.new_device_label,
     ephemeral_public_key: sess.ephemeral_public_key,
+    new_device_identity_key: sess.new_device_identity_key,
   });
 }
 

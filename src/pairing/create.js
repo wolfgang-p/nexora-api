@@ -18,6 +18,7 @@ async function createPairing(req, res) {
   const kind = body.new_device_kind;
   const label = body.new_device_label || null;
   const eph = body.ephemeral_public_key;
+  const identityKey = body.identity_public_key || null;
   if (!['web', 'desktop', 'crm_seat', 'api_bot', 'mobile'].includes(kind)) {
     return badRequest(res, 'Invalid new_device_kind');
   }
@@ -36,6 +37,7 @@ async function createPairing(req, res) {
     new_device_kind: kind,
     new_device_label: label,
     ephemeral_public_key: eph,
+    new_device_identity_key: identityKey,
     expires_at: expires,
   }).select('id, pairing_code, expires_at').single();
   if (error) return serverError(res, 'Could not create pairing session', error);
