@@ -8,7 +8,7 @@ const { attachWsServer } = require('./ws/server');
 const webhookWorker = require('./webhooks/worker');
 
 process.on('unhandledRejection', (err) => console.error('[unhandledRejection]', err));
-process.on('uncaughtException', (err) => console.error('[uncaughtException]', err);
+process.on('uncaughtException', (err) => console.error('[uncaughtException]', err));
 
 // Use HTTPS if certs exist, fallback to HTTP
 let server;
