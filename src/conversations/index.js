@@ -3,6 +3,7 @@
 const { supabase } = require('../db/supabase');
 const { readJson, ok, created, badRequest, forbidden, notFound, serverError } = require('../util/response');
 const { audit } = require('../util/audit');
+const { emitSystemMessage, fetchLabel, fetchLabels } = require('../util/systemMessage');
 
 /**
  * GET /conversations
@@ -114,6 +115,16 @@ async function createConversation(req, res) {
   audit({ userId: req.auth.userId, deviceId: req.auth.deviceId,
     action: 'conversation.create', targetType: 'conversation', targetId: conv.id, req });
 
+  if (kind === 'group') {
+    const actor = await fetchLabel(req.auth.userId);
+    emitSystemMessage({
+      conversationId: conv.id,
+      actorUserId: req.auth.userId,
+      actorDeviceId: req.auth.deviceId,
+      payload: { action: 'group_created', actor },
+    }).catch(() => {});
+  }
+
   created(res, { conversation: conv });
 }
 
@@ -159,6 +170,24 @@ async function updateConversation(req, res, { params }) {
     action: 'conversation.update', targetType: 'conversation', targetId: params.id,
     metadata: patch, req });
 
+  // System messages for visible changes (group/channel only — direct chats
+  // don't have a title anyway)
+  if (conv.kind !== 'direct') {
+    const actor = await fetchLabel(req.auth.userId);
+    if (patch.title !== undefined && patch.title !== conv.title) {
+      emitSystemMessage({
+        conversationId: params.id, actorUserId: req.auth.userId, actorDeviceId: req.auth.deviceId,
+        payload: { action: 'group_renamed', actor, new_title: patch.title },
+      }).catch(() => {});
+    }
+    if (patch.avatar_url !== undefined && patch.avatar_url !== conv.avatar_url) {
+      emitSystemMessage({
+        conversationId: params.id, actorUserId: req.auth.userId, actorDeviceId: req.auth.deviceId,
+        payload: { action: 'group_avatar_changed', actor },
+      }).catch(() => {});
+    }
+  }
+
   ok(res, { conversation: updated });
 }
 
@@ -186,6 +215,17 @@ async function addMembers(req, res, { params }) {
     targetType: 'conversation', targetId: params.id,
     metadata: { added: body.user_ids }, req });
 
+  const [actor, targets] = await Promise.all([
+    fetchLabel(req.auth.userId),
+    fetchLabels(body.user_ids),
+  ]);
+  emitSystemMessage({
+    conversationId: params.id,
+    actorUserId: req.auth.userId,
+    actorDeviceId: req.auth.deviceId,
+    payload: { action: 'member_added', actor, targets },
+  }).catch(() => {});
+
   ok(res, { ok: true });
 }
 
@@ -208,6 +248,19 @@ async function removeMember(req, res, { params }) {
     action: selfLeave ? 'conversation.leave' : 'conversation.members.remove',
     targetType: 'conversation', targetId: params.id,
     metadata: { removed: params.userId }, req });
+
+  const [actor, target] = await Promise.all([
+    fetchLabel(req.auth.userId),
+    fetchLabel(params.userId),
+  ]);
+  emitSystemMessage({
+    conversationId: params.id,
+    actorUserId: req.auth.userId,
+    actorDeviceId: req.auth.deviceId,
+    payload: selfLeave
+      ? { action: 'member_left', actor }
+      : { action: 'member_removed', actor, target },
+  }).catch(() => {});
 
   ok(res, { ok: true });
 }
@@ -233,6 +286,17 @@ async function changeRole(req, res, { params }) {
     action: 'conversation.members.role',
     targetType: 'conversation', targetId: params.id,
     metadata: { target_user: params.userId, new_role: body.role }, req });
+
+  const [actor, target] = await Promise.all([
+    fetchLabel(req.auth.userId),
+    fetchLabel(params.userId),
+  ]);
+  emitSystemMessage({
+    conversationId: params.id,
+    actorUserId: req.auth.userId,
+    actorDeviceId: req.auth.deviceId,
+    payload: { action: 'role_changed', actor, target, role: body.role },
+  }).catch(() => {});
 
   ok(res, { ok: true });
 }

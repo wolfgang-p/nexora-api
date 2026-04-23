@@ -102,6 +102,7 @@ r('GET', '/workspaces/:id', workspaces.get);
 r('PUT', '/workspaces/:id', workspaces.update);
 r('DELETE', '/workspaces/:id', workspaces.destroy);
 r('POST', '/workspaces/:id/invites', workspaces.createInvite);
+r('POST', '/workspaces/:id/channels', workspaces.createChannel);
 r('POST', '/workspaces/join', workspaces.joinByCode);
 
 // --- Tasks ---

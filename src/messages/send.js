@@ -187,6 +187,7 @@ function envelopeFor(m) {
     kind: m.kind,
     reply_to_message_id: m.reply_to_message_id,
     media_object_id: m.media_object_id,
+    system_payload: m.system_payload ?? null,
     created_at: m.created_at,
     edited_at: m.edited_at,
     deleted_at: m.deleted_at,
