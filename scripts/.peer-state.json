@@ -11,14 +11,14 @@
     "created_at": "2026-04-23T10:50:10.24097+00:00"
   },
   "device": {
-    "id": "b7803a1a-57f2-4b8d-88da-0acd73efb807",
+    "id": "713cba5e-1af6-43aa-8f0f-68752952011b",
     "kind": "mobile",
     "label": "Marlene",
-    "fingerprint": "FDE8 B68F E0B9 8EDD",
-    "enrolled_at": "2026-04-23T11:01:33.667959+00:00"
+    "fingerprint": "5556 BD51 833D 20C8",
+    "enrolled_at": "2026-04-23T13:28:53.987343+00:00"
   },
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIzYzYyMWI5Yy1hMzc2LTRjZDMtYjg1Ny1mN2YxZjFmM2IyYmYiLCJkaWQiOiJiNzgwM2ExYS01N2YyLTRiOGQtODhkYS0wYWNkNzNlZmI4MDciLCJ0eXAiOiJhY2Nlc3MiLCJpYXQiOjE3NzY5NDIwOTMsImV4cCI6MTc3Njk0Mjk5MywiYXVkIjoia29yby1jbGllbnQiLCJpc3MiOiJrb3JvIn0.-WVPM8ZC1UjimXIt-njLenyzWpDgMomUbXCLgZxxj_I",
-  "refresh_token": "onkbpwgdmpIvxXzvFfF5qbv59z7ltiGvQn--GqICTUsVcTr2epmVjPMuya9HxW_Z",
-  "secret_key_b64": "Gia0dcctg7GE5OgaQPxdxFxcLyNF301JalFWLYOBHJc=",
-  "public_key_b64": "074MpmJ9jUamMbdO1GiA0GVzi330gkcVHoRSCx2uZSs="
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIzYzYyMWI5Yy1hMzc2LTRjZDMtYjg1Ny1mN2YxZjFmM2IyYmYiLCJkaWQiOiI3MTNjYmE1ZS0xYWY2LTQzYWEtOGYwZi02ODc1Mjk1MjAxMWIiLCJ0eXAiOiJhY2Nlc3MiLCJpYXQiOjE3NzY5NTA5MzQsImV4cCI6MTc3Njk1MTgzNCwiYXVkIjoia29yby1jbGllbnQiLCJpc3MiOiJrb3JvIn0.afdEh7adfzjXo9I2pMbPufcgvp5nErcJaVI4zWewDXE",
+  "refresh_token": "uHM9IafH8g5wsuw1ejTgOk60FOl8uzeCM-N_1oAshRrbK2cuIEV_WEDKjT20m_z9",
+  "secret_key_b64": "sPE2e9y86V14nv5m+l1L2374YVfP5pxFWl8zcIeD8U8=",
+  "public_key_b64": "Je/hZA0UmiDJtHteokYoPmoq9xmzm4s3/pc7YgYjklY="
 }
