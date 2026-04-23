@@ -7,6 +7,7 @@ const { pipeline } = require('node:stream/promises');
 const { supabase } = require('../db/supabase');
 const { readJson, ok, created, badRequest, notFound, forbidden, serverError } = require('../util/response');
 const { audit } = require('../util/audit');
+const { check, send429 } = require('../middleware/rateLimit');
 const { plan, ensureDir, resolveKey, removeKey } = require('./fs');
 const config = require('../config');
 
@@ -22,6 +23,9 @@ const config = require('../config');
  * Response: { media: { id, url, mime_type, size_bytes, sha256 } }
  */
 async function upload(req, res) {
+  const lim = check([{ key: `media:${req.auth.userId}`, max: 30, windowMs: 60_000 }]);
+  if (!lim.ok) return send429(res, lim);
+
   const mime = (req.headers['content-type'] || '').split(';')[0].trim();
   const size = Number(req.headers['content-length'] || 0);
   const fileName = req.headers['x-file-name'] || null;

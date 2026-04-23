@@ -66,6 +66,7 @@ r('GET', '/users/:id', users.getUser);
 r('GET', '/devices', devices.listOwnDevices);
 r('PUT', '/devices/:id', devices.updateDevice);
 r('DELETE', '/devices/:id', devices.revokeDevice);
+r('POST', '/devices/push-token', devices.registerPushToken);
 r('GET', '/conversations/:id/devices', devices.listConversationDevices);
 
 // --- Conversations ---
@@ -114,8 +115,10 @@ r('GET', '/tasks/lists', tasks.listLists);
 r('POST', '/tasks/lists', tasks.createList);
 
 // --- Calls ---
+r('GET', '/calls', calls.list);
 r('POST', '/calls', calls.start);
 r('POST', '/calls/:id/join', calls.join);
+r('POST', '/calls/:id/reject', calls.reject);
 r('POST', '/calls/:id/leave', calls.leave);
 r('POST', '/calls/:id/end', calls.end);
 

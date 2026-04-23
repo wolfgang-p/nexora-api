@@ -5,6 +5,8 @@ const { sha256, otpCode, randomBase64Url } = require('../util/crypto');
 const { signAccess } = require('./jwt');
 const { audit } = require('../util/audit');
 const { readJson, ok, created, badRequest, unauthorized, serverError } = require('../util/response');
+const { check, send429, clientIp } = require('../middleware/rateLimit');
+const { sendOtp } = require('../sms');
 const config = require('../config');
 
 const OTP_LENGTH = 6;
@@ -30,7 +32,13 @@ async function requestOtp(req, res) {
   const phone = normalizePhone(body.phone_e164 || body.phone_number);
   if (!phone) return badRequest(res, 'Invalid phone number (E.164 required)');
 
-  // Rate limit: max 3 active OTPs per phone in the last 15 minutes
+  const rlimit = check([
+    { key: `otp:phone:${phone}`,         max: 5,  windowMs: 60 * 60 * 1000 }, // 5/h per phone
+    { key: `otp:ip:${clientIp(req)}`,    max: 20, windowMs: 60 * 60 * 1000 }, // 20/h per IP
+  ]);
+  if (!rlimit.ok) return send429(res, rlimit);
+
+  // Additional DB-level guard: max 3 active OTPs in the last 15 minutes.
   const { count } = await supabase
     .from('otps')
     .select('id', { count: 'exact', head: true })
@@ -54,13 +62,8 @@ async function requestOtp(req, res) {
   });
   if (error) return serverError(res, 'Could not generate OTP', error);
 
-  if (config.sms.devMode) {
-    // Never log OTPs in prod. Only in dev mode with no SMS provider configured.
-    console.error(`[DEV OTP] ${phone} → ${code}`);
-  } else {
-    // TODO: wire SMS provider (twilio, messagebird, etc.)
-    console.warn('[sms] provider not implemented; OTP generated but not sent');
-  }
+  try { await sendOtp(phone, code); }
+  catch (err) { console.error('[sms]', err?.message || err); }
 
   ok(res, { ok: true, expires_in: OTP_TTL_SECONDS });
 }

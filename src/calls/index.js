@@ -70,6 +70,66 @@ async function join(req, res, { params }) {
 }
 
 /**
+ * POST /calls/:id/reject   — recipient declines before joining.
+ * Ends the call with reason='rejected' and notifies participants.
+ */
+async function reject(req, res, { params }) {
+  const { data: call } = await supabase.from('calls').select('*').eq('id', params.id).maybeSingle();
+  if (!call) return notFound(res);
+  if (call.ended_at) return ok(res, { call });
+
+  // Only callees can reject; initiator should use /end
+  if (call.initiator_user_id === req.auth.userId) {
+    return badRequest(res, 'Initiator cannot reject their own call — use /end');
+  }
+
+  // Verify caller is an actual conv member
+  const { data: me } = await supabase.from('conversation_members').select('user_id')
+    .eq('conversation_id', call.conversation_id).eq('user_id', req.auth.userId)
+    .is('left_at', null).maybeSingle();
+  if (!me) return forbidden(res);
+
+  const { data: updated } = await supabase.from('calls').update({
+    ended_at: new Date().toISOString(),
+    end_reason: 'rejected',
+  }).eq('id', params.id).select('*').single();
+
+  const { data: initiatorDevs } = await supabase.from('devices').select('id')
+    .eq('user_id', call.initiator_user_id).is('revoked_at', null);
+  broadcastToDevices((initiatorDevs || []).map((d) => d.id), () => ({
+    type: 'call.rejected',
+    call_id: params.id,
+    by_user_id: req.auth.userId,
+  }));
+
+  ok(res, { call: updated });
+}
+
+/**
+ * GET /calls?conversation_id=&limit=
+ */
+async function list(req, res, { query }) {
+  let q = supabase.from('calls').select(`
+    id, conversation_id, kind, initiator_user_id, started_at, ended_at, end_reason, duration_seconds
+  `).order('started_at', { ascending: false }).limit(Math.min(Number(query.limit) || 50, 200));
+
+  if (query.conversation_id) {
+    q = q.eq('conversation_id', query.conversation_id);
+  } else {
+    // All conversations I'm a member of
+    const { data: memberships } = await supabase.from('conversation_members')
+      .select('conversation_id').eq('user_id', req.auth.userId).is('left_at', null);
+    const convIds = (memberships || []).map((m) => m.conversation_id);
+    if (!convIds.length) return ok(res, { calls: [] });
+    q = q.in('conversation_id', convIds);
+  }
+
+  const { data, error } = await q;
+  if (error) return serverError(res, 'Query failed', error);
+  ok(res, { calls: data || [] });
+}
+
+/**
  * POST /calls/:id/leave
  */
 async function leave(req, res, { params }) {
@@ -100,4 +160,4 @@ async function end(req, res, { params }) {
   ok(res, { call: updated });
 }
 
-module.exports = { start, join, leave, end };
+module.exports = { start, join, leave, end, reject, list };

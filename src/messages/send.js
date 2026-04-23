@@ -4,6 +4,8 @@ const { supabase } = require('../db/supabase');
 const { readJson, badRequest, created, forbidden, serverError } = require('../util/response');
 const { audit } = require('../util/audit');
 const { broadcastToDevices } = require('../ws/dispatch');
+const { pushToDevices } = require('../push');
+const { check, send429 } = require('../middleware/rateLimit');
 
 const VALID_KINDS = ['text', 'image', 'voice', 'video', 'file', 'location'];
 
@@ -24,6 +26,11 @@ const VALID_KINDS = ['text', 'image', 'voice', 'video', 'file', 'location'];
 async function sendMessage(req, res) {
   const body = await readJson(req).catch(() => null);
   if (!body) return badRequest(res, 'Invalid JSON');
+
+  const lim = check([
+    { key: `send:${req.auth.userId}`, max: 120, windowMs: 60_000 },
+  ]);
+  if (!lim.ok) return send429(res, lim);
 
   const {
     conversation_id: convId,
@@ -153,9 +160,10 @@ async function sendMessage(req, res) {
     return serverError(res, 'Could not persist recipients', mrErr);
   }
 
-  // Fire WS push (async)
+  // Fire WS push (async) + push notifications to offline devices
+  const recipientDeviceIds = recipients.map((r) => r.device_id);
   broadcastToDevices(
-    recipients.map((r) => r.device_id),
+    recipientDeviceIds,
     (deviceId) => {
       const r = recipients.find((x) => x.device_id === deviceId);
       return {
@@ -167,6 +175,12 @@ async function sendMessage(req, res) {
     },
   );
 
+  pushToDevices(recipientDeviceIds, {
+    title: 'Koro',
+    body: previewLabelFor(msg.kind),
+    data: { type: 'message', conversation_id: convId, message_id: msg.id },
+  }).catch(() => {});
+
   audit({
     userId: req.auth.userId, deviceId: req.auth.deviceId,
     action: 'message.create',
@@ -176,6 +190,16 @@ async function sendMessage(req, res) {
   });
 
   created(res, { message: envelopeFor(msg) });
+}
+
+function previewLabelFor(kind) {
+  switch (kind) {
+    case 'image': return '📷 Neues Bild';
+    case 'voice': return '🎤 Neue Sprachnachricht';
+    case 'video': return '🎞️ Neues Video';
+    case 'file':  return '📎 Neue Datei';
+    default:      return 'Neue Nachricht';
+  }
 }
 
 function envelopeFor(m) {

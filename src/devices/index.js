@@ -98,4 +98,26 @@ async function updateDevice(req, res, { params }) {
   ok(res, { ok: true });
 }
 
-module.exports = { listOwnDevices, listConversationDevices, revokeDevice, updateDevice };
+/**
+ * POST /devices/push-token   { token, platform? }
+ * Registers / refreshes this device's Expo push token.
+ */
+async function registerPushToken(req, res) {
+  const { readJson, badRequest } = require('../util/response');
+  const body = await readJson(req).catch(() => null);
+  if (!body?.token) return badRequest(res, 'token required');
+
+  await supabase.from('push_tokens').upsert({
+    device_id: req.auth.deviceId,
+    platform: body.platform || req.headers['x-platform'] || 'unknown',
+    token: body.token,
+    last_used_at: new Date().toISOString(),
+  }, { onConflict: 'device_id' });
+
+  ok(res, { ok: true });
+}
+
+module.exports = {
+  listOwnDevices, listConversationDevices, revokeDevice, updateDevice,
+  registerPushToken,
+};
