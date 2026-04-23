@@ -8,7 +8,7 @@ const { ok, notFound } = require('../util/response');
  * Returns one of:
  *   { status: 'pending' }
  *   { status: 'claimed' }
- *   { status: 'completed', ciphertext, nonce, device_id, user_id }
+ *   { status: 'completed', ciphertext, nonce, device_secret_ciphertext, device_secret_nonce, device_id, user_id }
  *   { status: 'expired' | 'cancelled' }
  */
 async function pollPairing(req, res, { params }) {
@@ -21,10 +21,26 @@ async function pollPairing(req, res, { params }) {
 
   if (sess.cancelled_at) return ok(res, { status: 'cancelled' });
   if (sess.completed_at) {
+    // Fetch the mobile (claiming) device's public key so the new web device
+    // can decrypt the device secret that was sealed to the ephemeral public key
+    // using the mobile device's secret key.
+    let senderPublicKey = null;
+    if (sess.claimed_by_device) {
+      const { data: device } = await supabase
+        .from('devices')
+        .select('identity_public_key')
+        .eq('id', sess.claimed_by_device)
+        .maybeSingle();
+      if (device) senderPublicKey = device.identity_public_key;
+    }
+
     return ok(res, {
       status: 'completed',
       ciphertext: sess.ciphertext,
       nonce: sess.nonce,
+      device_secret_ciphertext: sess.device_secret_ciphertext,
+      device_secret_nonce: sess.device_secret_nonce,
+      sender_public_key: senderPublicKey,
       device_id: sess.resulting_device_id,
       user_id: sess.claimed_by_user,
     });

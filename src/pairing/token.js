@@ -63,6 +63,8 @@ async function getPairingToken(req, res, { params }) {
   ok(res, {
     access_token: accessToken,
     refresh_token: refreshToken,
+    device_secret_ciphertext: sess.device_secret_ciphertext,
+    device_secret_nonce: sess.device_secret_nonce,
   });
 }
 

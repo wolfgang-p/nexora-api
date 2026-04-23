@@ -8,14 +8,16 @@ const { audit } = require('../util/audit');
 /**
  * POST /pairing/sessions/:id/deliver   (authed as the claiming mobile user)
  *
- * The mobile device has encrypted the user's identity key to the new
- * device's ephemeral public key. We store ciphertext + nonce, and create
- * the new device row so it can start receiving fanout.
+ * The mobile device encrypts:
+ * 1. Its own device secret key (for message history sync) to ephemeral_public_key
+ * 2. Provides its identity_public_key for the new device registration
+ *
+ * We store encrypted secret + nonce and create the new device row.
  *
  * Body: {
- *   ciphertext: b64,
- *   nonce: b64,
- *   new_device_public_key: b64      // the long-term per-device identity key
+ *   identity_public_key: b64,               // the long-term per-device identity key
+ *   device_secret_ciphertext: b64,          // encrypted device secret
+ *   device_secret_nonce: b64
  * }
  */
 async function deliverPairing(req, res, { params }) {
@@ -57,6 +59,11 @@ async function deliverPairing(req, res, { params }) {
     return badRequest(res, 'identity_public_key has unreasonable length');
   }
 
+  // Validate encrypted device secret (for message history sync)
+  if (!body.device_secret_ciphertext || !body.device_secret_nonce) {
+    return badRequest(res, 'device_secret_ciphertext and device_secret_nonce required');
+  }
+
   // Create the new device row (revocable, visible to owner)
   const { data: device, error: devErr } = await supabase.from('devices').insert({
     user_id: sess.claimed_by_user,
@@ -67,10 +74,12 @@ async function deliverPairing(req, res, { params }) {
   }).select('id, fingerprint').single();
   if (devErr) return serverError(res, 'Could not register device', devErr);
 
-  // Stamp the session
+  // Stamp the session and store encrypted device secret for history sync
   const { error } = await supabase.from('pairing_sessions').update({
     resulting_device_id: device.id,
     completed_at: new Date().toISOString(),
+    device_secret_ciphertext: body.device_secret_ciphertext,
+    device_secret_nonce: body.device_secret_nonce,
   }).eq('id', sess.id);
   if (error) return serverError(res, 'Could not finalize pairing', error);
 

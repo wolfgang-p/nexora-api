@@ -44,15 +44,41 @@ async function listMessages(req, res, { params, query }) {
     return ok(res, { messages: [], next_cursor: null });
   }
 
-  // Pull ciphertext for THIS device only
+  // Pull ciphertext for THIS device first
   const ids = msgs.map((m) => m.id);
   const { data: myCopies } = await supabase
     .from('message_recipients')
-    .select('message_id, ciphertext, nonce, delivered_at, read_at')
+    .select('message_id, ciphertext, nonce, delivered_at, read_at, recipient_device_id')
     .in('message_id', ids)
     .eq('recipient_device_id', req.auth.deviceId);
 
   const copyMap = new Map((myCopies || []).map((c) => [c.message_id, c]));
+
+  // For messages where THIS device wasn't a recipient (device enrolled after
+  // the message was sent), fall back to any other device owned by the same
+  // user. The client can decrypt these using the device secret it obtained
+  // during pairing (key-sharing).
+  const missingIds = ids.filter((id) => !copyMap.has(id));
+  if (missingIds.length > 0) {
+    const { data: siblingDevices } = await supabase
+      .from('devices')
+      .select('id')
+      .eq('user_id', req.auth.userId)
+      .neq('id', req.auth.deviceId);
+    const siblingIds = (siblingDevices || []).map((d) => d.id);
+    if (siblingIds.length > 0) {
+      const { data: fallbackCopies } = await supabase
+        .from('message_recipients')
+        .select('message_id, ciphertext, nonce, delivered_at, read_at, recipient_device_id')
+        .in('message_id', missingIds)
+        .in('recipient_device_id', siblingIds);
+      for (const c of fallbackCopies || []) {
+        // First fallback wins; duplicates across sibling devices all decrypt
+        // to the same plaintext anyway.
+        if (!copyMap.has(c.message_id)) copyMap.set(c.message_id, c);
+      }
+    }
+  }
 
   // Pull all reactions for these messages
   const { data: rxns } = await supabase
@@ -88,9 +114,12 @@ async function listMessages(req, res, { params, query }) {
     const agg = aggMap.get(m.id);
     return {
       ...envelopeFor(m),
-      // null means "this device wasn't a recipient" (probably enrolled later)
+      // null means "no device of this user was a recipient" (very old / alien)
       ciphertext: c?.ciphertext ?? null,
       nonce: c?.nonce ?? null,
+      // If this copy was for a sibling device (pre-pairing), the client needs
+      // to decrypt using the shared device secret it received during pairing.
+      recipient_device_id: c?.recipient_device_id ?? null,
       delivered_at: c?.delivered_at || null,
       read_at: c?.read_at || null,
       any_delivered_at: agg?.anyDelivered || false,
