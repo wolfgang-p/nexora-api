@@ -11,18 +11,29 @@ const { audit } = require('../util/audit');
  */
 async function claimPairing(req, res, { params }) {
   const body = await readJson(req).catch(() => null);
-  if (!body?.pairing_code) return badRequest(res, 'pairing_code required');
+  const bodyPairingCode = body?.pairing_code;
 
-  const { data: sess } = await supabase
-    .from('pairing_sessions')
-    .select('*')
-    .eq('id', params.id)
-    .maybeSingle();
+  let query = supabase.from('pairing_sessions').select('*');
+
+  // Support both session ID and pairing code in URL
+  if (params.id.includes('-')) {
+    // UUID format — lookup by ID
+    query = query.eq('id', params.id);
+  } else {
+    // Short code format — lookup by pairing_code
+    query = query.eq('pairing_code', params.id);
+  }
+
+  const { data: sess } = await query.maybeSingle();
   if (!sess) return notFound(res, 'Pairing session not found');
   if (sess.cancelled_at || sess.completed_at) return forbidden(res, 'Session closed');
   if (new Date(sess.expires_at) < new Date()) return forbidden(res, 'Session expired');
   if (sess.claimed_by_user) return forbidden(res, 'Session already claimed');
-  if (sess.pairing_code !== body.pairing_code) return forbidden(res, 'Invalid pairing code');
+
+  // If pairing code was provided in body, validate it
+  if (bodyPairingCode && sess.pairing_code !== bodyPairingCode) {
+    return forbidden(res, 'Invalid pairing code');
+  }
 
   const { error } = await supabase.from('pairing_sessions').update({
     claimed_by_user: req.auth.userId,
