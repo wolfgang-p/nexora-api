@@ -13,10 +13,10 @@ process.on('uncaughtException', (err) => console.error('[uncaughtException]', er
 // Use HTTPS if certs exist, fallback to HTTP
 let server;
 try {
-  const certDir = process.env.CERT_DIR || '/etc/letsencrypt/live/api.koro.dev';
+  const certDir = process.env.CERT_DIR || '/etc/letsencrypt/live/api.koro.chat';
   const cert = fs.readFileSync(`${certDir}/fullchain.pem`, 'utf8');
   const key = fs.readFileSync(`${certDir}/privkey.pem`, 'utf8');
-  server = https.createServer({ cert, key }, (req, res) => {
+  server = https.createServer({ cert, key, minVersion: 'TLSv1.2' }, (req, res) => {
     handleRequest(req, res).catch((err) => {
       console.error('[fatal]', err);
       if (!res.headersSent) {
