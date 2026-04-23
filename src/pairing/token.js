@@ -2,7 +2,8 @@
 
 const { supabase } = require('../db/supabase');
 const { ok, notFound, forbidden } = require('../util/response');
-const { signAccess, randomBase64Url, sha256 } = require('../util/crypto');
+const { signAccess } = require('../auth/jwt');
+const { randomBase64Url, sha256 } = require('../util/crypto');
 const config = require('../config');
 
 /**
