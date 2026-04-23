@@ -17,6 +17,15 @@ async function getPairingToken(req, res, { params }) {
     .eq('id', params.id)
     .maybeSingle();
   if (!sess) return notFound(res, 'Pairing session not found');
+
+  console.log('[Pairing] Token request for session:', {
+    id: params.id,
+    completed_at: sess.completed_at,
+    token_issued_at: sess.token_issued_at,
+    resulting_device_id: sess.resulting_device_id,
+    claimed_by_user: sess.claimed_by_user,
+  });
+
   if (!sess.completed_at) return forbidden(res, 'Pairing not completed');
   if (sess.token_issued_at) return forbidden(res, 'Token already issued');
 
