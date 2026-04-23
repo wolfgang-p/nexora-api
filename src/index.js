@@ -1,25 +1,48 @@
 'use strict';
 
-const http = require('node:http');
+const https = require('node:https');
+const fs = require('node:fs');
 const config = require('./config');
 const { handleRequest } = require('./router');
 const { attachWsServer } = require('./ws/server');
 const webhookWorker = require('./webhooks/worker');
 
 process.on('unhandledRejection', (err) => console.error('[unhandledRejection]', err));
-process.on('uncaughtException', (err) => console.error('[uncaughtException]', err));
+process.on('uncaughtException', (err) => console.error('[uncaughtException]', err);
 
-const server = http.createServer((req, res) => {
-  handleRequest(req, res).catch((err) => {
-    console.error('[fatal]', err);
-    if (!res.headersSent) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Internal error' }));
-    } else {
-      res.end();
-    }
+// Use HTTPS if certs exist, fallback to HTTP
+let server;
+try {
+  const certDir = process.env.CERT_DIR || '/etc/letsencrypt/live/api.koro.dev';
+  const cert = fs.readFileSync(`${certDir}/fullchain.pem`, 'utf8');
+  const key = fs.readFileSync(`${certDir}/privkey.pem`, 'utf8');
+  server = https.createServer({ cert, key }, (req, res) => {
+    handleRequest(req, res).catch((err) => {
+      console.error('[fatal]', err);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal error' }));
+      } else {
+        res.end();
+      }
+    });
   });
-});
+  console.log('[koro-api] Using HTTPS');
+} catch (err) {
+  console.warn('[koro-api] HTTPS certs not found, falling back to HTTP:', err.message);
+  const http = require('node:http');
+  server = http.createServer((req, res) => {
+    handleRequest(req, res).catch((err) => {
+      console.error('[fatal]', err);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal error' }));
+      } else {
+        res.end();
+      }
+    });
+  });
+}
 
 attachWsServer(server);
 
