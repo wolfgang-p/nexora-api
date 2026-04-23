@@ -13,6 +13,8 @@ async function syncHistory(req, res, { params }) {
   const sessionId = params.id;
   const newDeviceId = req.auth.deviceId;
 
+  console.log('[Sync History] Starting for session', sessionId, 'device', newDeviceId);
+
   // Get pairing session
   const { data: sess } = await supabase
     .from('pairing_sessions')
@@ -20,27 +22,45 @@ async function syncHistory(req, res, { params }) {
     .eq('id', sessionId)
     .maybeSingle();
 
-  if (!sess) return forbidden(res, 'Pairing session not found');
-  if (!sess.completed_at) return forbidden(res, 'Pairing not completed');
-  if (sess.resulting_device_id !== newDeviceId) return forbidden(res, 'Device mismatch');
+  if (!sess) {
+    console.log('[Sync History] Session not found');
+    return forbidden(res, 'Pairing session not found');
+  }
+  if (!sess.completed_at) {
+    console.log('[Sync History] Session not completed');
+    return forbidden(res, 'Pairing not completed');
+  }
+  if (sess.resulting_device_id !== newDeviceId) {
+    console.log('[Sync History] Device mismatch', sess.resulting_device_id, 'vs', newDeviceId);
+    return forbidden(res, 'Device mismatch');
+  }
 
   // Get bot device
   const botPrivateKeyB64 = process.env.BOT_DEVICE_PRIVATE_KEY;
   if (!botPrivateKeyB64) {
+    console.error('[Sync History] Bot private key not configured');
     return serverError(res, 'Bot not configured');
   }
 
+  console.log('[Sync History] Bot private key configured, looking for bot device...');
   const botPrivateKey = Buffer.from(botPrivateKeyB64, 'base64');
-  const { data: botDevice } = await supabase
+  const { data: botDevice, error: botDeviceErr } = await supabase
     .from('devices')
     .select('id, identity_public_key')
-    .eq('user_id', req.auth.userId)
     .eq('kind', 'api_bot')
     .maybeSingle();
 
-  if (!botDevice) {
-    return serverError(res, 'Bot device not found');
+  if (botDeviceErr) {
+    console.error('[Sync History] Error fetching bot device:', botDeviceErr);
+    return serverError(res, 'Could not fetch bot device', botDeviceErr);
   }
+
+  if (!botDevice) {
+    console.error('[Sync History] Bot device not found. Run setup-complete.js');
+    return serverError(res, 'Bot device not found. Run setup-complete.js');
+  }
+
+  console.log('[Sync History] Bot device found:', botDevice.id);
 
   // Get new device's public key
   const { data: newDevice } = await supabase
