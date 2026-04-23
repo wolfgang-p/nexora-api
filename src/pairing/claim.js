@@ -13,18 +13,28 @@ async function claimPairing(req, res, { params }) {
   const body = await readJson(req).catch(() => null);
   const bodyPairingCode = body?.pairing_code;
 
-  let query = supabase.from('pairing_sessions').select('*');
+  let sess = null;
 
-  // Support both session ID and pairing code in URL
-  if (params.id.includes('-')) {
-    // UUID format — lookup by ID
-    query = query.eq('id', params.id);
-  } else {
-    // Short code format — lookup by pairing_code
-    query = query.eq('pairing_code', params.id);
+  // Try pairing_code first (short code like K9HJD)
+  if (!params.id.includes('-')) {
+    const { data } = await supabase
+      .from('pairing_sessions')
+      .select('*')
+      .eq('pairing_code', params.id)
+      .maybeSingle();
+    sess = data;
   }
 
-  const { data: sess } = await query.maybeSingle();
+  // If not found, try as session ID (UUID)
+  if (!sess && params.id.includes('-')) {
+    const { data } = await supabase
+      .from('pairing_sessions')
+      .select('*')
+      .eq('id', params.id)
+      .maybeSingle();
+    sess = data;
+  }
+
   if (!sess) return notFound(res, 'Pairing session not found');
   if (sess.cancelled_at || sess.completed_at) return forbidden(res, 'Session closed');
   if (new Date(sess.expires_at) < new Date()) return forbidden(res, 'Session expired');
