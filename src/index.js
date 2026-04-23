@@ -23,8 +23,8 @@ const server = http.createServer((req, res) => {
 
 attachWsServer(server);
 
-server.listen(config.port, () => {
-  console.log(`[koro-api] listening on :${config.port} (env=${config.isProd ? 'prod' : 'dev'})`);
+server.listen(config.port, '0.0.0.0', () => {
+  console.log(`[koro-api] listening on 0.0.0.0:${config.port} (env=${config.isProd ? 'prod' : 'dev'})`);
   if (config.sms.devMode) console.warn('[koro-api] SMS provider not configured — OTPs will be logged to stderr');
   if (!config.corsOrigins.length) console.warn('[koro-api] CORS_ORIGINS empty — all origins allowed');
   webhookWorker.start();
