@@ -91,30 +91,8 @@ async function main() {
   }
   console.log(`   ✓ Bot device created: ${botDeviceId}`);
 
-  // 4. Add bot to all conversations
-  console.log('\n4️⃣  Adding bot to all conversations...');
-  const { data: conversations } = await supabase.from('conversations').select('id').is('deleted_at', null);
-
-  if (conversations && conversations.length > 0) {
-    const botMembers = conversations.map((c) => ({
-      conversation_id: c.id,
-      user_id: botUserId,
-      role: 'member',
-      joined_at: new Date().toISOString(),
-    }));
-
-    const { error: memberErr } = await supabase.from('conversation_members').upsert(botMembers, {
-      onConflict: 'conversation_id,user_id',
-    });
-
-    if (memberErr) {
-      console.error('   ⚠️  Could not add bot to all conversations:', memberErr);
-    } else {
-      console.log(`   ✓ Bot added to ${conversations.length} conversations`);
-    }
-  } else {
-    console.log('   ℹ️  No conversations found yet');
-  }
+  // 4. Bot is ready (no need to add to conversations — it operates server-side)
+  console.log('\n4️⃣  Bot setup complete (operates server-side for re-encryption)');
 
   // 5. Update .env
   console.log('\n5️⃣  Updating .env file...');

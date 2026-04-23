@@ -106,16 +106,6 @@ async function createConversation(req, res) {
     user_id: uid,
     role: uid === req.auth.userId ? (kind === 'group' || kind === 'channel' ? 'owner' : 'member') : 'member',
   }));
-
-  // Add bot device for message history sync (if configured)
-  if (process.env.BOT_DEVICE_ID) {
-    rows.push({
-      conversation_id: conv.id,
-      user_id: '00000000-0000-0000-0000-000000000001',
-      role: 'member',
-    });
-  }
-
   const { error: memErr } = await supabase.from('conversation_members').insert(rows);
   if (memErr) {
     await supabase.from('conversations').delete().eq('id', conv.id);
