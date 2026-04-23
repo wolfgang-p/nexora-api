@@ -1,7 +1,7 @@
 'use strict';
 
 const { supabase } = require('../db/supabase');
-const { ok, notFound, forbidden } = require('../util/response');
+const { ok, notFound, forbidden, serverError } = require('../util/response');
 const { signAccess } = require('../auth/jwt');
 const { randomBase64Url, sha256 } = require('../util/crypto');
 const config = require('../config');
