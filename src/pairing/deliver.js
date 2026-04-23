@@ -20,8 +20,8 @@ const { audit } = require('../util/audit');
  */
 async function deliverPairing(req, res, { params }) {
   const body = await readJson(req).catch(() => null);
-  if (!body?.ciphertext || !body?.nonce || !body?.new_device_public_key) {
-    return badRequest(res, 'ciphertext, nonce, new_device_public_key required');
+  if (!body?.identity_public_key) {
+    return badRequest(res, 'identity_public_key required');
   }
 
   const { data: sess } = await supabase
@@ -35,9 +35,9 @@ async function deliverPairing(req, res, { params }) {
   if (!sess.claimed_by_user) return forbidden(res, 'Session not claimed');
   if (sess.claimed_by_user !== req.auth.userId) return forbidden(res, 'Not your session');
 
-  const newPkBuf = Buffer.from(body.new_device_public_key, 'base64');
-  if (newPkBuf.length < 16 || newPkBuf.length > 256) {
-    return badRequest(res, 'new_device_public_key has unreasonable length');
+  const pkBuf = Buffer.from(body.identity_public_key, 'base64');
+  if (pkBuf.length < 16 || pkBuf.length > 256) {
+    return badRequest(res, 'identity_public_key has unreasonable length');
   }
 
   // Create the new device row (revocable, visible to owner)
@@ -45,15 +45,13 @@ async function deliverPairing(req, res, { params }) {
     user_id: sess.claimed_by_user,
     kind: sess.new_device_kind,
     label: sess.new_device_label,
-    identity_public_key: body.new_device_public_key,
-    fingerprint: deviceFingerprint(newPkBuf),
+    identity_public_key: body.identity_public_key,
+    fingerprint: deviceFingerprint(pkBuf),
   }).select('id, fingerprint').single();
   if (devErr) return serverError(res, 'Could not register device', devErr);
 
   // Stamp the session
   const { error } = await supabase.from('pairing_sessions').update({
-    ciphertext: body.ciphertext,
-    nonce: body.nonce,
     resulting_device_id: device.id,
     completed_at: new Date().toISOString(),
   }).eq('id', params.id);
