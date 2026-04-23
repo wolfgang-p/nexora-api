@@ -237,7 +237,46 @@ async function changeRole(req, res, { params }) {
   ok(res, { ok: true });
 }
 
+/**
+ * GET /conversations/:id/info
+ * Returns full conversation + member list (with display_name, avatar_url, role).
+ */
+async function getConversationInfo(req, res, { params }) {
+  const { data: conv } = await supabase
+    .from('conversations').select('*').eq('id', params.id).maybeSingle();
+  if (!conv || conv.deleted_at) return notFound(res, 'Conversation not found');
+
+  const { data: me } = await supabase.from('conversation_members')
+    .select('role')
+    .eq('conversation_id', params.id)
+    .eq('user_id', req.auth.userId)
+    .is('left_at', null)
+    .maybeSingle();
+  if (!me) return forbidden(res, 'Not a member');
+
+  const { data: rows } = await supabase
+    .from('conversation_members')
+    .select('user_id, role, joined_at, user:users!inner(id, username, display_name, avatar_url, last_seen_at)')
+    .eq('conversation_id', params.id)
+    .is('left_at', null);
+
+  const members = (rows || []).map((r) => ({
+    id: r.user?.id,
+    username: r.user?.username ?? null,
+    display_name: r.user?.display_name ?? null,
+    avatar_url: r.user?.avatar_url ?? null,
+    last_seen_at: r.user?.last_seen_at ?? null,
+    role: r.role,
+    joined_at: r.joined_at,
+  }));
+
+  ok(res, {
+    conversation: { ...conv, my_role: me.role },
+    members,
+  });
+}
+
 module.exports = {
   listConversations, createConversation, updateConversation,
-  addMembers, removeMember, changeRole,
+  addMembers, removeMember, changeRole, getConversationInfo,
 };

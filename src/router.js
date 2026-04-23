@@ -71,6 +71,7 @@ r('GET', '/conversations/:id/devices', devices.listConversationDevices);
 // --- Conversations ---
 r('GET', '/conversations', conversations.listConversations);
 r('POST', '/conversations', conversations.createConversation);
+r('GET', '/conversations/:id/info', conversations.getConversationInfo);
 r('PUT', '/conversations/:id', conversations.updateConversation);
 r('POST', '/conversations/:id/members', conversations.addMembers);
 r('DELETE', '/conversations/:id/members/:userId', conversations.removeMember);
