@@ -40,17 +40,25 @@ async function getPairingToken(req, res, { params }) {
   const refreshHash = sha256(refreshToken);
   const refreshExpires = new Date(Date.now() + config.jwt.refreshTtl * 1000).toISOString();
 
-  await supabase.from('sessions').insert({
+  const { error: sessErr } = await supabase.from('sessions').insert({
     user_id: userId,
     device_id: deviceId,
     refresh_token_hash: refreshHash,
     expires_at: refreshExpires,
   });
+  if (sessErr) {
+    console.error('[Pairing] Session insert failed:', sessErr);
+    return serverError(res, 'Could not create session', sessErr);
+  }
 
   // Mark token as issued so it's not re-issued
-  await supabase.from('pairing_sessions').update({
+  const { error: updateErr } = await supabase.from('pairing_sessions').update({
     token_issued_at: new Date().toISOString(),
   }).eq('id', params.id);
+  if (updateErr) {
+    console.error('[Pairing] Mark token issued failed:', updateErr);
+    return serverError(res, 'Could not mark token issued', updateErr);
+  }
 
   ok(res, {
     access_token: accessToken,
