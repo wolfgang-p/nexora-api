@@ -18,16 +18,29 @@ async function authenticate(req, res) {
   try { claims = verifyAccess(m[1]); }
   catch { unauthorized(res, 'Invalid token'); return false; }
 
+  console.log('[Auth] Token verified for deviceId:', claims.deviceId);
+
   // Refuse if device was revoked
-  const { data: device } = await supabase
+  console.time('[Auth] Device lookup');
+  const { data: device, error } = await supabase
     .from('devices')
     .select('id, user_id, kind, revoked_at')
     .eq('id', claims.deviceId)
     .maybeSingle();
+  console.timeEnd('[Auth] Device lookup');
+
+  if (error) {
+    console.error('[Auth] Device lookup error:', error);
+    unauthorized(res, 'Database error');
+    return false;
+  }
+
   if (!device || device.revoked_at || device.user_id !== claims.userId) {
     unauthorized(res, 'Device revoked');
     return false;
   }
+
+  console.log('[Auth] Device verified:', device.id);
 
   // Update last_seen (fire and forget)
   supabase.from('devices').update({ last_seen_at: new Date().toISOString() })
