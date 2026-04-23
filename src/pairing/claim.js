@@ -48,12 +48,12 @@ async function claimPairing(req, res, { params }) {
   const { error } = await supabase.from('pairing_sessions').update({
     claimed_by_user: req.auth.userId,
     claimed_by_device: req.auth.deviceId,
-  }).eq('id', params.id);
+  }).eq('id', sess.id);
   if (error) return serverError(res, 'Could not claim session', error);
 
   audit({
     userId: req.auth.userId, deviceId: req.auth.deviceId,
-    action: 'pairing.claim', targetType: 'pairing_session', targetId: params.id, req,
+    action: 'pairing.claim', targetType: 'pairing_session', targetId: sess.id, req,
   });
 
   ok(res, {
