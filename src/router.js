@@ -156,11 +156,11 @@ function corsHeaders(req) {
     'Access-Control-Max-Age': '86400',
     'Vary': 'Origin',
   };
-  // Allow origin if configured OR if wildcard mode (no specific origins)
+  // Allow origin if configured OR if wildcard mode
   if (allowed) {
     if (origin) {
       headers['Access-Control-Allow-Origin'] = origin;
-    } else if (config.corsOrigins.length === 0) {
+    } else if (config.corsOrigins.length === 0 || config.corsOrigins.includes('*')) {
       // Wildcard mode: allow all (React Native fetch doesn't send Origin header)
       headers['Access-Control-Allow-Origin'] = '*';
     }
