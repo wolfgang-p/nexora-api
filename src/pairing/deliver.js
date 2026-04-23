@@ -24,11 +24,28 @@ async function deliverPairing(req, res, { params }) {
     return badRequest(res, 'identity_public_key required');
   }
 
-  const { data: sess } = await supabase
-    .from('pairing_sessions')
-    .select('*')
-    .eq('id', params.id)
-    .maybeSingle();
+  let sess = null;
+
+  // Try pairing_code first (short code like AAEAB)
+  if (!params.id.includes('-')) {
+    const { data } = await supabase
+      .from('pairing_sessions')
+      .select('*')
+      .eq('pairing_code', params.id)
+      .maybeSingle();
+    sess = data;
+  }
+
+  // If not found, try as session ID (UUID)
+  if (!sess && params.id.includes('-')) {
+    const { data } = await supabase
+      .from('pairing_sessions')
+      .select('*')
+      .eq('id', params.id)
+      .maybeSingle();
+    sess = data;
+  }
+
   if (!sess) return notFound(res, 'Pairing session not found');
   if (sess.cancelled_at || sess.completed_at) return forbidden(res, 'Session closed');
   if (new Date(sess.expires_at) < new Date()) return forbidden(res, 'Session expired');
@@ -54,14 +71,14 @@ async function deliverPairing(req, res, { params }) {
   const { error } = await supabase.from('pairing_sessions').update({
     resulting_device_id: device.id,
     completed_at: new Date().toISOString(),
-  }).eq('id', params.id);
+  }).eq('id', sess.id);
   if (error) return serverError(res, 'Could not finalize pairing', error);
 
   audit({
     userId: sess.claimed_by_user, deviceId: req.auth.deviceId,
     action: 'pairing.deliver',
     targetType: 'device', targetId: device.id,
-    metadata: { session_id: params.id, new_device_fingerprint: device.fingerprint },
+    metadata: { session_id: sess.id, new_device_fingerprint: device.fingerprint },
     req,
   });
 
