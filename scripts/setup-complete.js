@@ -17,6 +17,19 @@ const fs = require('fs');
 const path = require('path');
 const { createClient } = require('@supabase/supabase-js');
 
+// Load .env file manually
+const envPath = path.join(__dirname, '..', '.env');
+if (fs.existsSync(envPath)) {
+  const envContent = fs.readFileSync(envPath, 'utf-8');
+  envContent.split('\n').forEach((line) => {
+    const [key, ...valueParts] = line.split('=');
+    if (key && !process.env[key.trim()]) {
+      const value = valueParts.join('=').trim().replace(/^["']|["']$/g, '');
+      process.env[key.trim()] = value;
+    }
+  });
+}
+
 function b64(bytes) {
   return Buffer.from(bytes).toString('base64');
 }
