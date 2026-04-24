@@ -340,6 +340,7 @@ function sanitizeUser(u) {
     account_type: u.account_type,
     locale: u.locale,
     created_at: u.created_at,
+    is_admin: !!u.is_admin,
   };
 }
 
