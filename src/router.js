@@ -24,6 +24,8 @@ const media = require('./media/upload');
 const mediaDownload = require('./media/download');
 const smsWebhook = require('./sms/webhook');
 const ai = require('./ai/endpoints');
+const reminders = require('./reminders');
+const messagesScheduled = require('./messages/scheduled');
 const workspaces = require('./workspaces');
 const tasks = require('./tasks');
 const calls = require('./calls');
@@ -96,6 +98,17 @@ r('POST', '/messages/:id/delivered', messagesRead.markDelivered);
 r('POST', '/messages/:id/read', messagesRead.markRead);
 r('DELETE', '/messages/:id', messagesDelete.deleteMessage);
 r('PUT', '/messages/:id', messagesEdit.editMessage);
+
+// --- Scheduled messages ---
+r('GET',    '/messages/scheduled',     messagesScheduled.list);
+r('POST',   '/messages/scheduled',     messagesScheduled.create);
+r('DELETE', '/messages/scheduled/:id', messagesScheduled.destroy);
+
+// --- Reminders ---
+r('GET',    '/reminders',     reminders.list);
+r('POST',   '/reminders',     reminders.create);
+r('PUT',    '/reminders/:id', reminders.update);
+r('DELETE', '/reminders/:id', reminders.destroy);
 
 // --- Reactions ---
 r('GET', '/messages/:id/reactions', reactions.list);
