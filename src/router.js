@@ -18,6 +18,7 @@ const messagesSend = require('./messages/send');
 const messagesList = require('./messages/list');
 const messagesRead = require('./messages/read');
 const messagesDelete = require('./messages/delete');
+const messagesEdit = require('./messages/edit');
 const reactions = require('./reactions');
 const media = require('./media/upload');
 const mediaDownload = require('./media/download');
@@ -89,6 +90,7 @@ r('GET', '/conversations/:id/messages', messagesList.listMessages);
 r('POST', '/messages/:id/delivered', messagesRead.markDelivered);
 r('POST', '/messages/:id/read', messagesRead.markRead);
 r('DELETE', '/messages/:id', messagesDelete.deleteMessage);
+r('PUT', '/messages/:id', messagesEdit.editMessage);
 
 // --- Reactions ---
 r('GET', '/messages/:id/reactions', reactions.list);
