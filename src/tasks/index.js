@@ -5,7 +5,13 @@ const { ok, created, badRequest, notFound, forbidden, readJson, serverError } = 
 const { audit } = require('../util/audit');
 
 async function list(req, res, { query }) {
-  let q = supabase.from('tasks').select('*').is('deleted_at', null);
+  // Left-join the source message so every task from a chat carries a
+  // `source_conversation_id` — the client can render "Aus #Chat" without
+  // a second round-trip.
+  let q = supabase.from('tasks').select(`
+    *,
+    source_message:messages!tasks_source_message_id_fkey(id, conversation_id)
+  `).is('deleted_at', null);
   if (query.workspace_id) q = q.eq('workspace_id', query.workspace_id);
   if (query.assignee_id) q = q.eq('assignee_user_id', query.assignee_id);
   if (query.status) q = q.eq('status', query.status);
@@ -18,7 +24,14 @@ async function list(req, res, { query }) {
   );
   const { data, error } = await q;
   if (error) return serverError(res, 'Query failed', error);
-  ok(res, { tasks: data || [] });
+  // Flatten the join into a top-level field so TS clients don't have to
+  // chase a nested object.
+  const tasks = (data || []).map((t) => ({
+    ...t,
+    source_conversation_id: t.source_message?.conversation_id || null,
+    source_message: undefined,
+  }));
+  ok(res, { tasks });
 }
 
 async function create(req, res) {

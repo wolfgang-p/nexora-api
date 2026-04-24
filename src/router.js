@@ -23,6 +23,7 @@ const reactions = require('./reactions');
 const media = require('./media/upload');
 const mediaDownload = require('./media/download');
 const smsWebhook = require('./sms/webhook');
+const ai = require('./ai/endpoints');
 const workspaces = require('./workspaces');
 const tasks = require('./tasks');
 const calls = require('./calls');
@@ -141,6 +142,14 @@ r('POST', '/calls/:id/end', calls.end);
 r('GET', '/webhooks', webhooksReg.list);
 r('POST', '/webhooks', webhooksReg.create);
 r('DELETE', '/webhooks/:id', webhooksReg.destroy);
+
+// --- AI ---
+r('GET',  '/ai/status',         ai.status);
+r('POST', '/ai/extract-tasks',  ai.extractTasks);
+r('POST', '/ai/smart-replies',  ai.smartReplies);
+r('POST', '/ai/summarize',      ai.summarize);
+r('POST', '/ai/translate',      ai.translate);
+r('POST', '/ai/transcribe',     ai.transcribeVoice);
 
 // --- API keys ---
 r('GET', '/workspaces/:id/api-keys', apiKeys.list);
