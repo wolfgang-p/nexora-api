@@ -38,7 +38,10 @@ module.exports = {
   jwt: {
     secret: required('JWT_SECRET'),
     accessTtl: int('JWT_ACCESS_TTL', 900),
-    refreshTtl: int('JWT_REFRESH_TTL', 60 * 60 * 24 * 30),
+    // 180 days default. Sliding window — every successful /auth/refresh
+    // extends by another 180 days — so an active user stays signed in
+    // indefinitely. Raise further via JWT_REFRESH_TTL if needed.
+    refreshTtl: int('JWT_REFRESH_TTL', 60 * 60 * 24 * 180),
   },
 
   sms: {

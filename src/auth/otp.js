@@ -203,30 +203,87 @@ async function verifyOtp(req, res) {
 
 /**
  * POST /auth/refresh  { refresh_token }
- * Returns: { access_token, refresh_token }  (token rotation)
+ *
+ * Token rotation with theft detection:
+ *   - Valid token (row exists, not rotated, not revoked, not expired) →
+ *     mint a new refresh_token + access_token, mark old row rotated_at=now,
+ *     insert a new row, return both.
+ *   - Token reuse (row exists, rotated_at IS NOT NULL) →
+ *     SOMEONE else rotated this already. Treat as theft: revoke every
+ *     live session of this user, 401.
+ *   - Unknown token → 401.
+ *
+ * Sliding window: each successful rotation extends the expiry by
+ * JWT_REFRESH_TTL seconds, so a user who opens the app regularly stays
+ * signed in indefinitely. Absent activity for longer than the TTL
+ * (default 30 days) forces re-login.
  */
+const ROTATION_GRACE_DAYS = 7;
+
 async function refresh(req, res) {
   const body = await readJson(req).catch(() => null);
   if (!body?.refresh_token) return badRequest(res, 'refresh_token required');
 
   const hash = sha256(body.refresh_token);
+
+  // Look up across ALL session rows, including rotated ones, to catch reuse.
   const { data: sess } = await supabase
     .from('sessions')
     .select('*')
     .eq('refresh_token_hash', hash)
-    .is('revoked_at', null)
-    .gt('expires_at', new Date().toISOString())
     .maybeSingle();
 
-  if (!sess) return unauthorized(res, 'Invalid or expired refresh token');
+  if (!sess) return unauthorized(res, 'Invalid refresh token');
 
-  // Rotate
+  // THEFT DETECTION — the presented token was already rotated out, which
+  // means someone (user OR attacker) is replaying an older copy. Can't
+  // tell which side is legitimate, so we lock the whole user out.
+  if (sess.rotated_at) {
+    await supabase.from('sessions')
+      .update({ revoked_at: new Date().toISOString() })
+      .eq('user_id', sess.user_id)
+      .is('revoked_at', null);
+    audit({
+      userId: sess.user_id, deviceId: sess.device_id,
+      action: 'auth.refresh.reuse_detected',
+      targetType: 'session', targetId: sess.id,
+      metadata: { ip: req.socket?.remoteAddress || null },
+      req,
+    });
+    return unauthorized(res, 'Refresh token reuse detected — all sessions revoked');
+  }
+
+  if (sess.revoked_at) return unauthorized(res, 'Session revoked');
+  if (new Date(sess.expires_at) < new Date()) {
+    return unauthorized(res, 'Session expired');
+  }
+
+  // Rotate: mint a new token, insert a new row, mark the old one rotated.
   const newToken = randomBase64Url(48);
   const newHash = sha256(newToken);
+  const newExpires = new Date(Date.now() + config.jwt.refreshTtl * 1000).toISOString();
+
   await supabase.from('sessions').update({
-    refresh_token_hash: newHash,
+    rotated_at: new Date().toISOString(),
     last_used_at: new Date().toISOString(),
   }).eq('id', sess.id);
+
+  const { error: insertErr } = await supabase.from('sessions').insert({
+    user_id: sess.user_id,
+    device_id: sess.device_id,
+    refresh_token_hash: newHash,
+    expires_at: newExpires,
+  });
+  if (insertErr) return serverError(res, 'Could not rotate session', insertErr);
+
+  // Lazy prune: rotated rows older than the grace window aren't useful
+  // anymore (theft detection only cares about recent replays).
+  const prune = new Date(Date.now() - ROTATION_GRACE_DAYS * 86400_000).toISOString();
+  supabase.from('sessions').delete()
+    .eq('device_id', sess.device_id)
+    .not('rotated_at', 'is', null)
+    .lt('rotated_at', prune)
+    .then(() => {}, () => {});
 
   const accessToken = signAccess({ userId: sess.user_id, deviceId: sess.device_id });
   ok(res, { access_token: accessToken, refresh_token: newToken });
@@ -238,10 +295,12 @@ async function refresh(req, res) {
  */
 async function logout(req, res) {
   const { deviceId } = req.auth;
+  // Revoke every live (non-rotated, non-revoked) session for this device.
   await supabase.from('sessions')
     .update({ revoked_at: new Date().toISOString() })
     .eq('device_id', deviceId)
-    .is('revoked_at', null);
+    .is('revoked_at', null)
+    .is('rotated_at', null);
   audit({ userId: req.auth.userId, deviceId, action: 'auth.logout', req });
   ok(res, { ok: true });
 }
