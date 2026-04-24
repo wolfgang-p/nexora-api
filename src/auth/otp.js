@@ -32,9 +32,15 @@ async function requestOtp(req, res) {
   const phone = normalizePhone(body.phone_e164 || body.phone_number);
   if (!phone) return badRequest(res, 'Invalid phone number (E.164 required)');
 
+  const ip = clientIp(req);
   const rlimit = check([
-    { key: `otp:phone:${phone}`,         max: 5,  windowMs: 60 * 60 * 1000 }, // 5/h per phone
-    { key: `otp:ip:${clientIp(req)}`,    max: 20, windowMs: 60 * 60 * 1000 }, // 20/h per IP
+    // Short-burst: max 1 OTP per minute per phone — stops rapid click spam.
+    { key: `otp:phone:min:${phone}`,  max: 1,  windowMs: 60 * 1000 },
+    // Hourly ceiling per phone — stops long-term abuse of a single number.
+    { key: `otp:phone:${phone}`,      max: 5,  windowMs: 60 * 60 * 1000 },
+    // Per-IP ceiling (per minute + per hour) — stops a single source farming.
+    { key: `otp:ip:min:${ip}`,        max: 10, windowMs: 60 * 1000 },
+    { key: `otp:ip:${ip}`,            max: 30, windowMs: 60 * 60 * 1000 },
   ]);
   if (!rlimit.ok) return send429(res, rlimit);
 
@@ -52,18 +58,34 @@ async function requestOtp(req, res) {
   const code = otpCode(OTP_LENGTH);
   const codeHash = sha256(code, OTP_PEPPER);
   const expiresAt = new Date(Date.now() + OTP_TTL_SECONDS * 1000).toISOString();
-  const ip = req.socket?.remoteAddress || null;
 
   const { error } = await supabase.from('otps').insert({
     phone_e164: phone,
     code_hash: codeHash,
     expires_at: expiresAt,
-    ip_address: ip,
+    ip_address: req.socket?.remoteAddress || null,
   });
   if (error) return serverError(res, 'Could not generate OTP', error);
 
-  try { await sendOtp(phone, code); }
-  catch (err) { console.error('[sms]', err?.message || err); }
+  // Send the SMS. In production a failure must surface to the caller —
+  // otherwise the user waits forever for a code that never arrives.
+  try {
+    await sendOtp(phone, code);
+  } catch (err) {
+    const msg = err?.message || String(err);
+    // The message never contains the OTP (it's never logged). It may
+    // reference the upstream carrier status code only.
+    console.error('[sms:send failed]', msg);
+    if (config.isProd) {
+      // Roll back the DB row so the user can retry without hitting the
+      // "3 active OTPs" guard on a failed delivery.
+      try {
+        await supabase.from('otps').delete()
+          .eq('phone_e164', phone).eq('code_hash', codeHash);
+      } catch {}
+      return serverError(res, 'SMS delivery failed. Please try again.');
+    }
+  }
 
   ok(res, { ok: true, expires_in: OTP_TTL_SECONDS });
 }

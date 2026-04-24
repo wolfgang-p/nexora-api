@@ -3,6 +3,7 @@
 const { supabase } = require('../db/supabase');
 const { ok, created, badRequest, notFound, forbidden, readJson, serverError } = require('../util/response');
 const { broadcastToDevices } = require('../ws/dispatch');
+const { pushIncomingCall } = require('../push');
 
 /**
  * POST /calls    { conversation_id, kind: 'audio'|'video'|'screen' }
@@ -30,14 +31,17 @@ async function start(req, res) {
     joined_at: new Date().toISOString(),
   });
 
-  // Ring other participants' active devices
+  // Ring other participants' active devices. We do BOTH:
+  //   1. WebSocket broadcast (instant for devices that are online)
+  //   2. Push notification (wakes the app on locked/backgrounded devices)
   const { data: members } = await supabase.from('conversation_members')
     .select('user_id').eq('conversation_id', body.conversation_id).is('left_at', null);
   const otherIds = (members || []).map((m) => m.user_id).filter((u) => u !== req.auth.userId);
   if (otherIds.length) {
     const { data: devices } = await supabase.from('devices').select('id')
       .in('user_id', otherIds).is('revoked_at', null);
-    broadcastToDevices((devices || []).map((d) => d.id), () => ({
+    const targetDeviceIds = (devices || []).map((d) => d.id);
+    broadcastToDevices(targetDeviceIds, () => ({
       type: 'call.incoming',
       call_id: call.id,
       conversation_id: call.conversation_id,
@@ -45,6 +49,18 @@ async function start(req, res) {
       from_user_id: req.auth.userId,
       from_device_id: req.auth.deviceId,
     }));
+
+    // Resolve caller display name for the push banner
+    const { data: caller } = await supabase.from('users')
+      .select('display_name, username').eq('id', req.auth.userId).maybeSingle();
+    const fromName = caller?.display_name || caller?.username || 'Unbekannt';
+
+    pushIncomingCall(targetDeviceIds, {
+      callId: call.id,
+      conversationId: call.conversation_id,
+      kind: call.kind,
+      fromName,
+    }).catch((err) => console.error('[calls] push failed', err?.message || err));
   }
 
   created(res, { call });

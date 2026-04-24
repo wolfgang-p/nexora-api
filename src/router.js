@@ -21,6 +21,7 @@ const messagesDelete = require('./messages/delete');
 const reactions = require('./reactions');
 const media = require('./media/upload');
 const mediaDownload = require('./media/download');
+const smsWebhook = require('./sms/webhook');
 const workspaces = require('./workspaces');
 const tasks = require('./tasks');
 const calls = require('./calls');
@@ -47,6 +48,8 @@ r('GET', '/health', async (req, res) => ok(res, { ok: true }), { auth: false });
 
 // --- Auth ---
 r('POST', '/auth/request-otp', otp.requestOtp, { auth: false });
+// Twilio delivery callback — signature-verified inside the handler.
+r('POST', '/sms/twilio-status', smsWebhook.twilioStatus, { auth: false });
 r('POST', '/auth/verify-otp', otp.verifyOtp, { auth: false });
 r('POST', '/auth/refresh', otp.refresh, { auth: false });
 r('POST', '/auth/logout', otp.logout);
