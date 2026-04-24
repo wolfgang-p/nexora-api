@@ -91,8 +91,18 @@ async function sendMessage(req, res) {
     .select('id, user_id')
     .in('user_id', memberIds)
     .is('revoked_at', null);
-  const allowedDeviceIds = new Set((devices || []).map((d) => d.id));
-  const ownerByDevice = new Map((devices || []).map((d) => [d.id, d.user_id]));
+
+  // Filter out devices of peers who have blocked the sender. We still let
+  // the message go through to non-blocked members — blocking is per-pair,
+  // not a full-chat kill. Sender's own devices stay (self-sync).
+  const { data: blocks } = await supabase.from('user_blocks')
+    .select('blocker_user_id')
+    .in('blocker_user_id', memberIds.filter((u) => u !== req.auth.userId))
+    .eq('blocked_user_id', req.auth.userId);
+  const blockedBy = new Set((blocks || []).map((b) => b.blocker_user_id));
+  const effectiveDevices = (devices || []).filter((d) => !blockedBy.has(d.user_id));
+  const allowedDeviceIds = new Set(effectiveDevices.map((d) => d.id));
+  const ownerByDevice = new Map(effectiveDevices.map((d) => [d.id, d.user_id]));
 
   // Validate: every provided recipient must be an allowed device; no duplicates
   const seen = new Set();

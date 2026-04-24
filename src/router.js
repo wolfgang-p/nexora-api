@@ -66,7 +66,11 @@ r('GET', '/pairing/sessions/:id/token', pairingToken.getPairingToken, { auth: fa
 r('GET', '/users/me', users.me);
 r('PUT', '/users/me', users.updateMe);
 r('GET', '/users/search', users.search);
+r('GET', '/users/blocked', users.listBlocked);
+r('POST', '/users/discover', users.discover);
 r('GET', '/users/:id', users.getUser);
+r('POST', '/users/:id/block', users.block);
+r('DELETE', '/users/:id/block', users.unblock);
 
 // --- Devices ---
 r('GET', '/devices', devices.listOwnDevices);
@@ -126,6 +130,7 @@ r('POST', '/tasks/lists', tasks.createList);
 
 // --- Calls ---
 r('GET', '/calls', calls.list);
+r('GET', '/calls/ice-servers', calls.iceServers);
 r('POST', '/calls', calls.start);
 r('POST', '/calls/:id/join', calls.join);
 r('POST', '/calls/:id/reject', calls.reject);

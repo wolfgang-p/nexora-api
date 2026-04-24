@@ -2,8 +2,29 @@
 
 const { supabase } = require('../db/supabase');
 const { ok, created, badRequest, notFound, forbidden, readJson, serverError } = require('../util/response');
-const { broadcastToDevices } = require('../ws/dispatch');
+const { broadcastToDevices, deviceOnline } = require('../ws/dispatch');
 const { pushIncomingCall } = require('../push');
+const config = require('../config');
+
+const RING_TIMEOUT_MS = 45 * 1000;
+
+/**
+ * GET /calls/ice-servers
+ * Authed — returns the ICE server list for the caller's WebRTC
+ * peer-connection. STUN is free, TURN uses short-lived credentials if
+ * the server is configured with a static username/credential.
+ */
+async function iceServers(req, res) {
+  const servers = config.ice.stunUrls.map((u) => ({ urls: u }));
+  if (config.ice.turnUrls.length > 0) {
+    servers.push({
+      urls: config.ice.turnUrls,
+      username: config.ice.turnUsername || undefined,
+      credential: config.ice.turnCredential || undefined,
+    });
+  }
+  ok(res, { ice_servers: servers });
+}
 
 /**
  * POST /calls    { conversation_id, kind: 'audio'|'video'|'screen' }
@@ -37,33 +58,104 @@ async function start(req, res) {
   const { data: members } = await supabase.from('conversation_members')
     .select('user_id').eq('conversation_id', body.conversation_id).is('left_at', null);
   const otherIds = (members || []).map((m) => m.user_id).filter((u) => u !== req.auth.userId);
+
+  // Reachability check: are there any non-revoked peer devices at all?
+  // Are any of them currently online via WS or have a push token? If
+  // neither, the client shows "Nicht erreichbar" immediately and saves
+  // the caller from waiting 45 s on a call that will never ring.
+  let reachable = false;
+  let targetDeviceIds = [];
+
   if (otherIds.length) {
     const { data: devices } = await supabase.from('devices').select('id')
       .in('user_id', otherIds).is('revoked_at', null);
-    const targetDeviceIds = (devices || []).map((d) => d.id);
-    broadcastToDevices(targetDeviceIds, () => ({
-      type: 'call.incoming',
-      call_id: call.id,
-      conversation_id: call.conversation_id,
-      kind: call.kind,
-      from_user_id: req.auth.userId,
-      from_device_id: req.auth.deviceId,
-    }));
+    targetDeviceIds = (devices || []).map((d) => d.id);
 
-    // Resolve caller display name for the push banner
-    const { data: caller } = await supabase.from('users')
-      .select('display_name, username').eq('id', req.auth.userId).maybeSingle();
-    const fromName = caller?.display_name || caller?.username || 'Unbekannt';
+    const { data: tokens } = await supabase.from('push_tokens')
+      .select('device_id').in('device_id', targetDeviceIds);
+    const hasPush = (tokens?.length || 0) > 0;
+    const anyOnline = targetDeviceIds.some((id) => deviceOnline(id));
+    reachable = anyOnline || hasPush;
 
-    pushIncomingCall(targetDeviceIds, {
-      callId: call.id,
-      conversationId: call.conversation_id,
-      kind: call.kind,
-      fromName,
-    }).catch((err) => console.error('[calls] push failed', err?.message || err));
+    if (reachable) {
+      broadcastToDevices(targetDeviceIds, () => ({
+        type: 'call.incoming',
+        call_id: call.id,
+        conversation_id: call.conversation_id,
+        kind: call.kind,
+        from_user_id: req.auth.userId,
+        from_device_id: req.auth.deviceId,
+      }));
+
+      // Resolve caller display name for the push banner
+      const { data: caller } = await supabase.from('users')
+        .select('display_name, username').eq('id', req.auth.userId).maybeSingle();
+      const fromName = caller?.display_name || caller?.username || 'Unbekannt';
+
+      pushIncomingCall(targetDeviceIds, {
+        callId: call.id,
+        conversationId: call.conversation_id,
+        kind: call.kind,
+        fromName,
+      }).catch((err) => console.error('[calls] push failed', err?.message || err));
+    }
   }
 
-  created(res, { call });
+  // Server-side miss timer: if the call never gets joined or ended within
+  // RING_TIMEOUT_MS, we auto-end it server-side as "missed" and tell
+  // everyone. This handles the case where the caller's client crashes
+  // mid-call or where the callee just ignores the ring forever.
+  if (reachable) {
+    setTimeout(() => autoEndIfUnanswered(call.id).catch(() => {}), RING_TIMEOUT_MS).unref();
+  } else {
+    // No reachable devices at all — immediately mark the call as ended
+    // with "unreachable" so the history entry reflects reality.
+    supabase.from('calls').update({
+      ended_at: new Date().toISOString(),
+      end_reason: 'unreachable',
+    }).eq('id', call.id).then(() => {}, () => {});
+  }
+
+  created(res, {
+    call,
+    reachable,
+    ring_timeout_ms: RING_TIMEOUT_MS,
+  });
+}
+
+/**
+ * Server-side fallback: if 45 s pass without a join or explicit end,
+ * mark the call missed and notify everyone. Idempotent — re-entering is
+ * safe, we just check ended_at first.
+ */
+async function autoEndIfUnanswered(callId) {
+  const { data: call } = await supabase.from('calls').select('*').eq('id', callId).maybeSingle();
+  if (!call || call.ended_at) return;
+
+  // Was anyone other than the initiator already in the call? Then don't
+  // mark missed — someone picked up right before the timer fired.
+  const { data: parts } = await supabase.from('call_participants')
+    .select('user_id').eq('call_id', callId);
+  const joined = (parts || []).filter((p) => p.user_id !== call.initiator_user_id);
+  if (joined.length > 0) return;
+
+  await supabase.from('calls').update({
+    ended_at: new Date().toISOString(),
+    end_reason: 'missed',
+  }).eq('id', callId);
+
+  // Notify all devices we previously rang + the caller's device
+  const { data: members } = await supabase.from('conversation_members')
+    .select('user_id').eq('conversation_id', call.conversation_id).is('left_at', null);
+  const memberIds = (members || []).map((m) => m.user_id);
+  if (!memberIds.length) return;
+  const { data: devices } = await supabase.from('devices')
+    .select('id').in('user_id', memberIds).is('revoked_at', null);
+  broadcastToDevices((devices || []).map((d) => d.id), () => ({
+    type: 'call.ended',
+    call_id: callId,
+    end_reason: 'missed',
+  }));
 }
 
 /**
@@ -155,25 +247,44 @@ async function leave(req, res, { params }) {
 }
 
 /**
- * POST /calls/:id/end
+ * POST /calls/:id/end   { reason?: 'normal' | 'canceled' | 'failed' }
  */
 async function end(req, res, { params }) {
+  const body = await readJson(req).catch(() => null);
+  const wanted = body?.reason;
+  const reason = ['normal', 'canceled', 'failed'].includes(wanted) ? wanted : 'normal';
+
   const { data: call } = await supabase.from('calls').select('*').eq('id', params.id).maybeSingle();
   if (!call) return notFound(res);
   if (call.ended_at) return ok(res, { call });
   if (call.initiator_user_id !== req.auth.userId) return forbidden(res, 'Initiator only');
 
+  // If the call never connected and is being ended by the caller, prefer
+  // 'canceled' even if the client didn't specify it — this keeps history
+  // accurate when someone rings and hangs up before anyone answered.
+  const { data: joinedParts } = await supabase.from('call_participants')
+    .select('user_id').eq('call_id', params.id);
+  const peerJoined = (joinedParts || []).some((p) => p.user_id !== call.initiator_user_id);
+  const effectiveReason = !peerJoined && reason === 'normal' ? 'canceled' : reason;
+
   const { data: updated } = await supabase.from('calls').update({
-    ended_at: new Date().toISOString(), end_reason: 'normal',
+    ended_at: new Date().toISOString(), end_reason: effectiveReason,
   }).eq('id', params.id).select('*').single();
 
-  // Notify participants
-  const { data: parts } = await supabase.from('call_participants')
-    .select('device_id').eq('call_id', params.id);
-  broadcastToDevices((parts || []).map((p) => p.device_id), () => ({
-    type: 'call.ended', call_id: params.id,
+  // Notify every device that was ever rung, not just those that joined —
+  // otherwise the callee's ringing screen never dismisses when the caller
+  // cancels before pickup.
+  const { data: members } = await supabase.from('conversation_members')
+    .select('user_id').eq('conversation_id', call.conversation_id).is('left_at', null);
+  const memberIds = (members || []).map((m) => m.user_id);
+  const { data: devs } = await supabase.from('devices')
+    .select('id').in('user_id', memberIds).is('revoked_at', null);
+  broadcastToDevices((devs || []).map((d) => d.id), () => ({
+    type: 'call.ended',
+    call_id: params.id,
+    end_reason: effectiveReason,
   }));
   ok(res, { call: updated });
 }
 
-module.exports = { start, join, leave, end, reject, list };
+module.exports = { start, join, leave, end, reject, list, iceServers };

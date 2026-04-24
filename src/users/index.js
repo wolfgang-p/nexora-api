@@ -58,10 +58,85 @@ async function search(req, res, { query }) {
  */
 async function getUser(req, res, { params }) {
   const { data: user } = await supabase
-    .from('users').select('id, username, display_name, avatar_url, account_type, last_seen_at')
+    .from('users')
+    .select('id, username, display_name, avatar_url, account_type, last_seen_at, bio, status_text')
     .eq('id', params.id).is('deleted_at', null).maybeSingle();
   if (!user) return notFound(res);
   ok(res, { user });
 }
 
-module.exports = { me, updateMe, search, getUser };
+/**
+ * POST /users/discover   { phone_hashes: [sha256(+49…), …] }
+ *
+ * Contacts sync. The mobile client hashes every address-book phone
+ * number (SHA-256 of the E.164 string, NO pepper, so hashes match
+ * across users) and sends the list. We return the subset of those
+ * hashes that correspond to Koro users, with minimal profile fields.
+ * We never reveal cleartext phone numbers.
+ */
+async function discover(req, res) {
+  const body = await readJson(req).catch(() => null);
+  const hashes = Array.isArray(body?.phone_hashes) ? body.phone_hashes : null;
+  if (!hashes) return badRequest(res, 'phone_hashes[] required');
+  // Clamp to avoid pathological payloads (address books can be huge).
+  const trimmed = hashes.slice(0, 5000)
+    .filter((h) => typeof h === 'string' && /^[a-f0-9]{64}$/i.test(h));
+
+  if (trimmed.length === 0) return ok(res, { matches: [] });
+
+  const { data } = await supabase
+    .from('users')
+    .select('id, phone_hash, username, display_name, avatar_url')
+    .is('deleted_at', null)
+    .in('phone_hash', trimmed);
+
+  // Don't match the caller themselves — they're already there.
+  const matches = (data || [])
+    .filter((u) => u.id !== req.auth.userId)
+    .map((u) => ({
+      id: u.id,
+      phone_hash: u.phone_hash,
+      username: u.username,
+      display_name: u.display_name,
+      avatar_url: u.avatar_url,
+    }));
+
+  ok(res, { matches });
+}
+
+/**
+ * POST /users/:id/block   (authed)
+ */
+async function block(req, res, { params }) {
+  if (params.id === req.auth.userId) return badRequest(res, 'Cannot block yourself');
+  const body = await readJson(req).catch(() => null);
+  const { error } = await supabase.from('user_blocks').upsert({
+    blocker_user_id: req.auth.userId,
+    blocked_user_id: params.id,
+    reason: body?.reason || null,
+  }, { onConflict: 'blocker_user_id,blocked_user_id' });
+  if (error) return serverError(res, 'Block failed', error);
+  ok(res, { ok: true });
+}
+
+/**
+ * DELETE /users/:id/block   (unblock)
+ */
+async function unblock(req, res, { params }) {
+  await supabase.from('user_blocks').delete()
+    .eq('blocker_user_id', req.auth.userId)
+    .eq('blocked_user_id', params.id);
+  ok(res, { ok: true });
+}
+
+/**
+ * GET /users/blocked — list of user_ids I've blocked.
+ */
+async function listBlocked(req, res) {
+  const { data } = await supabase.from('user_blocks')
+    .select('blocked_user_id, reason, created_at')
+    .eq('blocker_user_id', req.auth.userId);
+  ok(res, { blocks: data || [] });
+}
+
+module.exports = { me, updateMe, search, getUser, discover, block, unblock, listBlocked };

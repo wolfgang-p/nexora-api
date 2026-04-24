@@ -60,4 +60,14 @@ module.exports = {
   push: {
     expoAccessToken: process.env.EXPO_ACCESS_TOKEN || null,
   },
+
+  // WebRTC NAT traversal. Multiple URLs comma-separated in env — at
+  // minimum a STUN server, plus a TURN server with username+credential
+  // for strict-NAT peers (corporate networks etc).
+  ice: {
+    stunUrls: list('STUN_URLS', ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302']),
+    turnUrls: list('TURN_URLS'),
+    turnUsername: process.env.TURN_USERNAME || null,
+    turnCredential: process.env.TURN_CREDENTIAL || null,
+  },
 };

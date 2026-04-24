@@ -138,11 +138,21 @@ async function verifyOtp(req, res) {
       .from('users').select('*').eq('phone_e164', phone).maybeSingle();
     if (existing) {
       user = existing;
-      await supabase.from('users').update({ last_seen_at: new Date().toISOString() }).eq('id', user.id);
+      const patch = { last_seen_at: new Date().toISOString() };
+      if (!user.phone_hash) {
+        // Back-fill phone_hash for users that existed before migration 0008.
+        patch.phone_hash = sha256(phone);
+        user.phone_hash = patch.phone_hash;
+      }
+      await supabase.from('users').update(patch).eq('id', user.id);
     } else {
       const { data: inserted, error: insErr } = await supabase
         .from('users')
-        .insert({ phone_e164: phone, display_name: null })
+        .insert({
+          phone_e164: phone,
+          phone_hash: sha256(phone), // pepper-less hash for contacts discovery
+          display_name: null,
+        })
         .select('*').single();
       if (insErr) return serverError(res, 'Could not create user', insErr);
       user = inserted;
