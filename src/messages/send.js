@@ -37,6 +37,7 @@ async function sendMessage(req, res) {
     kind,
     reply_to_message_id: replyTo = null,
     media_object_id: mediaId = null,
+    forwarded = false,
     recipients,
   } = body;
 
@@ -87,10 +88,11 @@ async function sendMessage(req, res) {
 
   const { data: devices } = await supabase
     .from('devices')
-    .select('id')
+    .select('id, user_id')
     .in('user_id', memberIds)
     .is('revoked_at', null);
   const allowedDeviceIds = new Set((devices || []).map((d) => d.id));
+  const ownerByDevice = new Map((devices || []).map((d) => [d.id, d.user_id]));
 
   // Validate: every provided recipient must be an allowed device; no duplicates
   const seen = new Set();
@@ -143,6 +145,7 @@ async function sendMessage(req, res) {
     kind,
     reply_to_message_id: replyTo,
     media_object_id: mediaId,
+    forwarded_at: forwarded ? new Date().toISOString() : null,
   }).select('*').single();
   if (msgErr) return serverError(res, 'Could not create message', msgErr);
 
@@ -175,11 +178,34 @@ async function sendMessage(req, res) {
     },
   );
 
-  pushToDevices(recipientDeviceIds, {
-    title: 'Koro',
-    body: previewLabelFor(msg.kind),
-    data: { type: 'message', conversation_id: convId, message_id: msg.id },
-  }).catch(() => {});
+  // Push to offline devices — BUT skip the sender's own devices. A user
+  // should never get a notification for a message they themselves sent
+  // (even on a second device — self-sync happens silently via WS).
+  const pushTargets = recipientDeviceIds.filter(
+    (id) => ownerByDevice.get(id) !== req.auth.userId,
+  );
+  if (pushTargets.length > 0) {
+    // Resolve sender + conversation titles for a nicer banner:
+    //   Direct:   title = "Marlene",              body = "Neue Nachricht"
+    //   Group:    title = "Team · Marlene",       body = "Neue Nachricht"
+    const [{ data: sender }, { data: conv }] = await Promise.all([
+      supabase.from('users')
+        .select('display_name, username').eq('id', req.auth.userId).maybeSingle(),
+      supabase.from('conversations')
+        .select('kind, title').eq('id', convId).maybeSingle(),
+    ]);
+    const senderName =
+      sender?.display_name || (sender?.username ? '@' + sender.username : 'Koro');
+    const title = conv?.kind === 'direct'
+      ? senderName
+      : `${conv?.title || 'Gruppe'} · ${senderName}`;
+
+    pushToDevices(pushTargets, {
+      title,
+      body: previewLabelFor(msg.kind),
+      data: { type: 'message', conversation_id: convId, message_id: msg.id },
+    }).catch(() => {});
+  }
 
   audit({
     userId: req.auth.userId, deviceId: req.auth.deviceId,
@@ -214,6 +240,7 @@ function envelopeFor(m) {
     system_payload: m.system_payload ?? null,
     created_at: m.created_at,
     edited_at: m.edited_at,
+    forwarded_at: m.forwarded_at ?? null,
     deleted_at: m.deleted_at,
   };
 }
