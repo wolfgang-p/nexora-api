@@ -107,6 +107,14 @@ async function editMessage(req, res, { params }) {
     req,
   });
 
+  try {
+    require('../webhooks/dispatcher').emit({
+      event: 'message.edited',
+      workspaceId: null,
+      payload: { message: envelopeFor(updated) },
+    });
+  } catch { /* swallow */ }
+
   ok(res, { message: envelopeFor(updated) });
 }
 

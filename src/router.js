@@ -2,7 +2,9 @@
 
 const config = require('./config');
 const { notFound, ok, serverError } = require('./util/response');
-const { authenticate } = require('./auth/middleware');
+const { authenticate, requireAdmin } = require('./auth/middleware');
+const { counter, httpResponse, observe } = require('./util/metrics');
+const logger = require('./util/logger');
 
 // Route modules
 const otp = require('./auth/otp');
@@ -31,6 +33,10 @@ const tasks = require('./tasks');
 const calls = require('./calls');
 const webhooksReg = require('./webhooks/register');
 const apiKeys = require('./api_keys');
+const reports = require('./reports');
+const admin = require('./admin');
+const adminMetrics = require('./admin/metrics');
+const gdpr = require('./users/gdpr');
 
 /**
  * Tiny route matcher. Routes are tuples: [method, pattern, handler, { auth }]
@@ -44,7 +50,11 @@ function r(method, pattern, handler, opts = {}) {
     keys.push(k);
     return '/([^/]+)';
   }) + '/?$');
-  routes.push({ method, regex, keys, handler, auth: opts.auth !== false });
+  routes.push({
+    method, regex, keys, handler,
+    auth: opts.auth !== false,
+    admin: opts.admin === true,
+  });
 }
 
 // --- Health ---
@@ -169,6 +179,56 @@ r('GET', '/workspaces/:id/api-keys', apiKeys.list);
 r('POST', '/workspaces/:id/api-keys', apiKeys.create);
 r('DELETE', '/api-keys/:id', apiKeys.revoke);
 
+// --- Reports (user-facing) ---
+r('POST', '/reports',                    reports.createReport);
+r('POST', '/admin/appeals',              reports.createAppeal);
+
+// --- GDPR self-service ---
+r('GET',    '/users/me/export', gdpr.exportMe);
+r('DELETE', '/users/me',        gdpr.deleteMe);
+
+// --- Admin: overview ---
+r('GET',    '/admin/stats',               admin.stats,            { admin: true });
+// --- Admin: users ---
+r('GET',    '/admin/users',               admin.listUsers,        { admin: true });
+r('GET',    '/admin/users/:id',           admin.getUser,          { admin: true });
+r('POST',   '/admin/users/:id/force-logout', admin.forceLogout,   { admin: true });
+r('POST',   '/admin/users/:id/set-admin', admin.setAdmin,         { admin: true });
+r('POST',   '/admin/users/:id/ban',       reports.adminBanUser,   { admin: true });
+r('DELETE', '/admin/users/:id/ban',       reports.adminUnbanUser, { admin: true });
+r('DELETE', '/admin/users/:id',           admin.deleteUser,       { admin: true });
+// --- Admin: conversations ---
+r('GET',    '/admin/conversations',       admin.listConversations, { admin: true });
+r('GET',    '/admin/conversations/:id',   admin.getConversation,   { admin: true });
+// --- Admin: media ---
+r('GET',    '/admin/media',               admin.listMedia,        { admin: true });
+r('POST',   '/admin/media/:id/delete',    admin.deleteMedia,      { admin: true });
+// --- Admin: pairings ---
+r('GET',    '/admin/pairings',            admin.listPairings,     { admin: true });
+// --- Admin: webhooks ---
+r('GET',    '/admin/webhooks',            admin.listWebhooks,     { admin: true });
+r('GET',    '/admin/webhooks/deliveries', admin.listDeliveries,   { admin: true });
+r('GET',    '/admin/webhooks/events',     admin.listEventLog,     { admin: true });
+// --- Admin: api keys ---
+r('GET',    '/admin/api-keys',            admin.listApiKeys,      { admin: true });
+r('DELETE', '/admin/api-keys/:id',        admin.revokeApiKey,     { admin: true });
+// --- Admin: feature flags ---
+r('GET',    '/admin/feature-flags',       admin.listFlags,        { admin: true });
+r('POST',   '/admin/feature-flags',       admin.upsertFlag,       { admin: true });
+r('DELETE', '/admin/feature-flags/:key',  admin.deleteFlag,       { admin: true });
+// --- Admin: retention ---
+r('GET',    '/admin/retention',           admin.listRetention,    { admin: true });
+r('POST',   '/admin/retention',           admin.upsertRetention,  { admin: true });
+// --- Admin: audit ---
+r('GET',    '/audit',                     admin.listAudit,        { admin: true });
+// --- Admin: reports moderation ---
+r('GET',    '/admin/reports',             reports.adminListReports,  { admin: true });
+r('GET',    '/admin/reports/:id',         reports.adminGetReport,    { admin: true });
+r('POST',   '/admin/reports/:id/resolve', reports.adminResolveReport, { admin: true });
+// --- Admin: appeals ---
+r('GET',    '/admin/appeals',             reports.adminListAppeals,   { admin: true });
+r('POST',   '/admin/appeals/:id/resolve', reports.adminResolveAppeal, { admin: true });
+
 // ----------------------------------------------------------------------------
 
 function parseQuery(url) {
@@ -206,6 +266,15 @@ function corsHeaders(req) {
 }
 
 async function handleRequest(req, res) {
+  const startNs = process.hrtime.bigint();
+  counter('http_requests_total');
+
+  // Prometheus scrape endpoint — no CORS, no JSON, own auth path.
+  if (req.method === 'GET' && (req.url || '').startsWith('/metrics')) {
+    adminMetrics.handler(req, res);
+    return;
+  }
+
   const cors = corsHeaders(req);
   // Preflight
   if (req.method === 'OPTIONS') {
@@ -215,6 +284,13 @@ async function handleRequest(req, res) {
   }
   // Apply CORS to every response
   for (const [k, v] of Object.entries(cors)) res.setHeader(k, v);
+
+  // Record status + latency on close. `writeHead` is monkey-wrapped so we
+  // can read the final status even if the handler didn't use writeHead.
+  res.on('finish', () => {
+    httpResponse(res.statusCode);
+    observe('http_request_duration_seconds', Number(process.hrtime.bigint() - startNs) / 1e9);
+  });
 
   const { path, query } = parseQuery(req.url || '/');
 
@@ -230,8 +306,14 @@ async function handleRequest(req, res) {
         const authed = await authenticate(req, res);
         if (!authed) return;
       }
+      if (route.admin) {
+        const ok = await requireAdmin(req, res);
+        if (!ok) return;
+      }
       await route.handler(req, res, { params, query });
     } catch (err) {
+      logger.error('[router]', err);
+      try { require('./util/sentry').captureException(err, { route: route.regex.source }); } catch { /* ignore */ }
       serverError(res, 'Internal error', err);
     }
     return;

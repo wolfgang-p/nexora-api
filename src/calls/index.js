@@ -284,6 +284,17 @@ async function end(req, res, { params }) {
     call_id: params.id,
     end_reason: effectiveReason,
   }));
+
+  try {
+    const { data: conv } = await supabase.from('conversations')
+      .select('workspace_id').eq('id', call.conversation_id).maybeSingle();
+    require('../webhooks/dispatcher').emit({
+      event: 'call.ended',
+      workspaceId: conv?.workspace_id || null,
+      payload: { call: updated },
+    });
+  } catch { /* swallow */ }
+
   ok(res, { call: updated });
 }
 

@@ -27,12 +27,55 @@ async function tick() {
   if (ticking) return;
   ticking = true;
   try {
-    await Promise.all([fireReminders(), fireScheduledMessages()]);
+    await Promise.all([fireReminders(), fireScheduledMessages(), sweepRetention()]);
   } catch (err) {
     console.error('[scheduler] tick failed', err?.message || err);
   } finally {
     ticking = false;
   }
+}
+
+// Retention sweep: runs every tick but is cheap-no-op if nothing is due.
+// Purges messages, media, and audit events that are past their TTL.
+let lastRetentionSweep = 0;
+const RETENTION_SWEEP_INTERVAL_MS = 10 * 60 * 1000; // every 10 minutes
+async function sweepRetention() {
+  if (Date.now() - lastRetentionSweep < RETENTION_SWEEP_INTERVAL_MS) return;
+  lastRetentionSweep = Date.now();
+
+  const { data: policies } = await supabase.from('retention_policies').select('*');
+  if (!policies || policies.length === 0) return;
+
+  for (const p of policies) {
+    if (p.message_ttl_days) {
+      const cutoff = new Date(Date.now() - p.message_ttl_days * 86400_000).toISOString();
+      let qb = supabase.from('messages').delete().lt('created_at', cutoff);
+      if (p.conversation_id) qb = qb.eq('conversation_id', p.conversation_id);
+      else if (p.workspace_id) {
+        const { data: cIds } = await supabase.from('conversations')
+          .select('id').eq('workspace_id', p.workspace_id);
+        qb = qb.in('conversation_id', (cIds || []).map((c) => c.id));
+      }
+      await qb;
+    }
+    if (p.media_ttl_days) {
+      const cutoff = new Date(Date.now() - p.media_ttl_days * 86400_000).toISOString();
+      let qb = supabase.from('media_objects').update({ deleted_at: new Date().toISOString() })
+        .lt('created_at', cutoff).is('deleted_at', null);
+      if (p.conversation_id) qb = qb.eq('conversation_id', p.conversation_id);
+      await qb;
+    }
+    if (p.audit_ttl_days) {
+      const cutoff = new Date(Date.now() - p.audit_ttl_days * 86400_000).toISOString();
+      let qb = supabase.from('audit_events').delete().lt('created_at', cutoff);
+      if (p.workspace_id) qb = qb.eq('workspace_id', p.workspace_id);
+      await qb;
+    }
+  }
+
+  // Trim webhook_event_log to 30 days regardless of policy.
+  const webhookCutoff = new Date(Date.now() - 30 * 86400_000).toISOString();
+  await supabase.from('webhook_event_log').delete().lt('created_at', webhookCutoff);
 }
 
 async function fireReminders() {

@@ -69,6 +69,11 @@ async function create(req, res) {
 
   audit({ userId: req.auth.userId, deviceId: req.auth.deviceId, workspaceId: row.workspace_id,
     action: 'task.create', targetType: 'task', targetId: data.id, req });
+  try {
+    require('../webhooks/dispatcher').emit({
+      event: 'task.created', workspaceId: row.workspace_id || null, payload: { task: data },
+    });
+  } catch { /* swallow */ }
   created(res, { task: data });
 }
 
@@ -105,6 +110,12 @@ async function update(req, res, { params }) {
   if (error) return serverError(res, 'Update failed', error);
   audit({ userId: req.auth.userId, deviceId: req.auth.deviceId, workspaceId: task.workspace_id,
     action: 'task.update', targetType: 'task', targetId: params.id, metadata: patch, req });
+  try {
+    const event = patch.status === 'done' ? 'task.completed' : 'task.updated';
+    require('../webhooks/dispatcher').emit({
+      event, workspaceId: task.workspace_id || null, payload: { task: data, patch },
+    });
+  } catch { /* swallow */ }
   ok(res, { task: data });
 }
 

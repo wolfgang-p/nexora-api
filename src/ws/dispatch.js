@@ -62,4 +62,11 @@ function deviceOnline(deviceId) {
   return deviceSockets.has(deviceId);
 }
 
-module.exports = { register, unregister, sendTo, broadcastToDevices, disconnectDevice, deviceOnline };
+/** Live counts for the admin overview. */
+function wsStats() {
+  let sockets = 0;
+  for (const s of deviceSockets.values()) sockets += s.size;
+  return { devices: deviceSockets.size, sockets };
+}
+
+module.exports = { register, unregister, sendTo, broadcastToDevices, disconnectDevice, deviceOnline, wsStats };

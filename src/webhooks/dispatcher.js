@@ -1,72 +1,68 @@
 'use strict';
 
-const { supabase } = require('../db/supabase');
-const { hmac } = require('../util/crypto');
-
 /**
- * Fire a webhook event to all subscribers of a workspace.
+ * Event producer. Callers pass `{ event, workspaceId?, payload }` and we:
+ *   1. Mirror into webhook_event_log (capped; trimmed on a schedule) so
+ *      the admin UI can browse recent fires.
+ *   2. Materialize a `webhook_deliveries` row for every matching webhook.
+ *      The retry worker picks these up on its next 30-s tick.
  *
- * Payload by convention contains only metadata (no plaintext). If the hook
- * is tied to a crm_seat device, the caller may include per-device ciphertext
- * separately; that extension point isn't implemented here.
+ * Matching rule: a webhook matches when its `events` array is NULL / empty
+ * (wildcard) or contains the event name.
  *
- * Best-effort. Persists attempts into webhook_deliveries for retries.
+ * Fire-and-forget: any error is logged and swallowed — a subscriber
+ * pipeline hiccup must never break message send.
  */
-async function dispatch(workspaceId, event, payload) {
-  const { data: hooks } = await supabase
-    .from('webhooks')
-    .select('id, url, secret, events, active')
-    .eq('workspace_id', workspaceId)
+
+const { supabase } = require('../db/supabase');
+const logger = require('../util/logger');
+const log = logger.child('webhooks.dispatcher');
+
+const SUPPORTED_EVENTS = new Set([
+  'message.new',
+  'message.edited',
+  'message.deleted',
+  'call.started',
+  'call.ended',
+  'task.created',
+  'task.updated',
+  'task.completed',
+  'user.joined_workspace',
+  'user.left_workspace',
+  'workspace.created',
+  'conversation.created',
+  'conversation.member_added',
+]);
+
+async function emit({ event, workspaceId = null, payload }) {
+  if (!SUPPORTED_EVENTS.has(event)) {
+    log.warn('unknown event', event);
+    return;
+  }
+
+  supabase.from('webhook_event_log').insert({
+    event, workspace_id: workspaceId, payload,
+  }).then(() => {}, (err) => log.warn('event_log insert', err?.message));
+
+  let qb = supabase.from('webhooks')
+    .select('id, events, workspace_id')
     .eq('active', true);
-  if (!hooks?.length) return;
+  if (workspaceId) qb = qb.eq('workspace_id', workspaceId);
 
+  const { data: hooks, error } = await qb;
+  if (error) { log.warn('hooks lookup', error?.message); return; }
+  if (!hooks || hooks.length === 0) return;
+
+  const rows = [];
   for (const h of hooks) {
-    if (!h.events.includes(event) && !h.events.includes('*')) continue;
-    deliver(h, event, payload).catch((err) => console.error('[webhook]', err.message));
+    const matches = !h.events || h.events.length === 0 || h.events.includes(event);
+    if (!matches) continue;
+    rows.push({ webhook_id: h.id, event, payload, attempt: 0 });
   }
+  if (rows.length === 0) return;
+
+  const { error: insErr } = await supabase.from('webhook_deliveries').insert(rows);
+  if (insErr) log.warn('deliveries insert', insErr?.message);
 }
 
-async function deliver(hook, event, payload) {
-  const body = JSON.stringify({ event, ...payload });
-  const sig = hmac(hook.secret, body);
-
-  let status = 0;
-  let responseBody = null;
-  try {
-    const r = await fetch(hook.url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Koro-Event': event,
-        'X-Koro-Signature': `sha256=${sig}`,
-      },
-      body,
-      signal: AbortSignal.timeout(10_000),
-    });
-    status = r.status;
-    responseBody = (await r.text()).slice(0, 2000);
-  } catch (err) {
-    responseBody = String(err?.message || err).slice(0, 2000);
-  }
-
-  await supabase.from('webhook_deliveries').insert({
-    webhook_id: hook.id,
-    event, payload,
-    response_status: status || null,
-    response_body: responseBody,
-    delivered_at: status >= 200 && status < 300 ? new Date().toISOString() : null,
-  });
-
-  if (status >= 200 && status < 300) {
-    await supabase.from('webhooks').update({
-      last_success_at: new Date().toISOString(), failure_count: 0,
-    }).eq('id', hook.id);
-  } else {
-    await supabase.from('webhooks').update({
-      last_failure_at: new Date().toISOString(),
-      failure_count: supabase.raw ? supabase.raw('failure_count + 1') : undefined,
-    }).eq('id', hook.id);
-  }
-}
-
-module.exports = { dispatch };
+module.exports = { emit, SUPPORTED_EVENTS };

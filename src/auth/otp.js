@@ -4,7 +4,7 @@ const { supabase } = require('../db/supabase');
 const { sha256, otpCode, randomBase64Url } = require('../util/crypto');
 const { signAccess } = require('./jwt');
 const { audit } = require('../util/audit');
-const { readJson, ok, created, badRequest, unauthorized, serverError } = require('../util/response');
+const { readJson, ok, created, badRequest, unauthorized, forbidden, serverError } = require('../util/response');
 const { check, send429, clientIp } = require('../middleware/rateLimit');
 const { sendOtp } = require('../sms');
 const config = require('../config');
@@ -130,6 +130,22 @@ async function verifyOtp(req, res) {
   // Consume OTP
   await supabase.from('otps').update({ consumed_at: new Date().toISOString() }).eq('id', otp.id);
 
+  // Reject if this phone OR this device's identity_public_key is on the
+  // fingerprint blocklist — a banned user can't re-register by rotating
+  // the device, and a banned device can't pivot to a different number.
+  const phoneHash = sha256(phone);
+  const pubKeyB64 = String(deviceInput.identity_public_key || '');
+  {
+    const { data: bans } = await supabase
+      .from('banned_fingerprints')
+      .select('id')
+      .or(`phone_hash.eq.${phoneHash},device_public_key.eq.${pubKeyB64}`)
+      .limit(1);
+    if (bans && bans.length > 0) {
+      return forbidden(res, 'Account banned');
+    }
+  }
+
   // Upsert user
   let user;
   let justCreated = false;
@@ -163,8 +179,7 @@ async function verifyOtp(req, res) {
   // "new" means either freshly inserted or a previous row that never completed profile
   const isNewUser = justCreated || !user.display_name;
 
-  // Register device
-  const pubKeyB64 = String(deviceInput.identity_public_key || '');
+  // Register device (pubKeyB64 already validated against blocklist above)
   const pubKeyBuffer = Buffer.from(pubKeyB64, 'base64');
   if (pubKeyBuffer.length < 16 || pubKeyBuffer.length > 256) {
     return badRequest(res, 'identity_public_key has unreasonable length');

@@ -61,7 +61,7 @@ async function sendMessage(req, res) {
   // Respect only_admins_send
   const { data: conv } = await supabase
     .from('conversations')
-    .select('id, only_admins_send, deleted_at')
+    .select('id, only_admins_send, deleted_at, workspace_id')
     .eq('id', convId).maybeSingle();
   if (!conv || conv.deleted_at) return forbidden(res, 'Conversation not found');
   if (conv.only_admins_send && !['owner', 'admin'].includes(me.role)) {
@@ -224,6 +224,24 @@ async function sendMessage(req, res) {
     metadata: { conversation_id: convId, kind, recipient_count: recipients.length },
     req,
   });
+
+  // Fire webhook event. We emit envelope metadata only — the ciphertext is
+  // per-recipient and subscribers don't hold the decryption keys anyway.
+  try {
+    const { emit } = require('../webhooks/dispatcher');
+    const workspaceId = conv.workspace_id || null;
+    emit({
+      event: 'message.new',
+      workspaceId,
+      payload: {
+        message: envelopeFor(msg),
+        recipient_count: recipients.length,
+      },
+    });
+  } catch (err) {
+    // Swallow — webhook failures never break message send.
+    console.warn('[webhook emit]', err?.message);
+  }
 
   created(res, { message: envelopeFor(msg) });
 }

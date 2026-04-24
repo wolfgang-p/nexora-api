@@ -2,7 +2,8 @@
 
 const { supabase } = require('../db/supabase');
 const { sha256 } = require('../util/crypto');
-const { unauthorized } = require('../util/response');
+const { unauthorized, forbidden } = require('../util/response');
+const { hit, check, send429 } = require('../middleware/rateLimit');
 
 /**
  * Alternative auth path for CRM / server-to-server integrations.
@@ -45,4 +46,45 @@ function hasScope(req, scope) {
   return scopes.includes(scope) || scopes.includes('*');
 }
 
-module.exports = { authenticateApiKey, hasScope };
+/**
+ * Middleware factory. Usage in a handler gated by API key:
+ *   if (!(await requireScope('messages:write')(req, res))) return;
+ *
+ * Also applies a per-scope, per-key sliding-ish rate-limit. The default
+ * budget is generous (300 req/min) but adjustable via env:
+ *   KORO_APIKEY_RL_<SCOPE_UPPER>=<limit>
+ * e.g. KORO_APIKEY_RL_MESSAGES_WRITE=120
+ */
+const SCOPE_RL_DEFAULT = 300;
+const SCOPE_RL_WINDOW_SEC = 60;
+
+function requireScope(scope) {
+  const envKey = `KORO_APIKEY_RL_${scope.replace(/[:.-]/g, '_').toUpperCase()}`;
+  const limit = Number(process.env[envKey] || SCOPE_RL_DEFAULT);
+
+  return async (req, res) => {
+    if (!req.apiKey) { forbidden(res, 'API key required'); return false; }
+    if (!hasScope(req, scope)) {
+      forbidden(res, `Missing scope: ${scope}`);
+      return false;
+    }
+    const bucket = `apiKey:${req.apiKey.id}:scope:${scope}`;
+    if (!check(bucket, limit, SCOPE_RL_WINDOW_SEC)) {
+      send429(res);
+      return false;
+    }
+    hit(bucket);
+    return true;
+  };
+}
+
+/** All recognized scope names; used by the admin UI's scope-picker. */
+const ALL_SCOPES = [
+  'conversations:read', 'conversations:write',
+  'messages:read',      'messages:write',
+  'tasks:read',         'tasks:write',
+  'users:read',
+  'webhooks:manage',
+];
+
+module.exports = { authenticateApiKey, hasScope, requireScope, ALL_SCOPES };
