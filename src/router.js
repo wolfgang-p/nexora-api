@@ -37,6 +37,8 @@ const reports = require('./reports');
 const admin = require('./admin');
 const adminMetrics = require('./admin/metrics');
 const gdpr = require('./users/gdpr');
+const publicChannels = require('./public/channels');
+const polls = require('./polls');
 
 /**
  * Tiny route matcher. Routes are tuples: [method, pattern, handler, { auth }]
@@ -221,6 +223,18 @@ r('GET',    '/admin/retention',           admin.listRetention,    { admin: true 
 r('POST',   '/admin/retention',           admin.upsertRetention,  { admin: true });
 // --- Admin: audit ---
 r('GET',    '/audit',                     admin.listAudit,        { admin: true });
+// --- Public channels ---
+r('POST',   '/conversations/:id/public',  publicChannels.publish);
+r('PUT',    '/conversations/:id/public',  publicChannels.updatePublic);
+r('DELETE', '/conversations/:id/public',  publicChannels.unpublish);
+r('GET',    '/public/channels/:slug',     publicChannels.viewPublic, { auth: false });
+
+// --- Polls ---
+r('POST',   '/polls/:id/vote',     polls.vote);
+r('DELETE', '/polls/:id/vote',     polls.retract);
+r('GET',    '/polls/:id/results',  polls.results);
+r('POST',   '/polls/:id/close',    polls.close);
+
 // --- Admin: reports moderation ---
 r('GET',    '/admin/reports',             reports.adminListReports,  { admin: true });
 r('GET',    '/admin/reports/:id',         reports.adminGetReport,    { admin: true });

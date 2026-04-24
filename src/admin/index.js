@@ -72,6 +72,8 @@ async function stats(req, res) {
     webhooks: { total: webhooks, failing_last_24h: webhooksFailing },
     api_keys: { active: apiKeys },
     calls: { active: activeCalls },
+    polls: { total: await countRows('polls'), votes_last_24h: await countRowsGt('poll_votes', 'voted_at', hoursAgo(24)) },
+    public_channels: { total: await supabase.from('conversations').select('*', { count: 'exact', head: true }).not('public_slug', 'is', null).then((r) => r.count || 0) },
     server: {
       uptime_sec: Math.round(process.uptime()),
       rss_mb: Math.round(process.memoryUsage().rss / 1_048_576),
@@ -196,15 +198,17 @@ async function deleteUser(req, res, { params }) {
 
 // ── Conversations ──────────────────────────────────────────────────
 
-/** GET /admin/conversations?q=…&kind=direct|group|channel&limit=50 */
+/** GET /admin/conversations?q=…&kind=direct|group|channel&public=1&limit=50 */
 async function listConversations(req, res, { query }) {
   const limit = clampInt(query.limit, 50, 1, 200);
   let qb = supabase.from('conversations')
-    .select('id, kind, title, workspace_id, created_at, updated_at, deleted_at')
+    .select('id, kind, title, workspace_id, created_at, updated_at, deleted_at, public_slug, public_title, published_at')
     .order('updated_at', { ascending: false })
     .limit(limit);
   if (query.kind) qb = qb.eq('kind', query.kind);
   if (query.q) qb = qb.ilike('title', `%${query.q}%`);
+  if (query.public === '1')      qb = qb.not('public_slug', 'is', null);
+  else if (query.public === '0') qb = qb.is('public_slug', null);
 
   const { data, error } = await qb;
   if (error) return serverError(res, 'Query failed', error);

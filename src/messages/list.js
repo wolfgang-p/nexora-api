@@ -109,6 +109,45 @@ async function listMessages(req, res, { params, query }) {
     aggMap.set(r.message_id, cur);
   }
 
+  // Hydrate polls for any poll-kind message in this page. We only pull
+  // server-owned metadata — options texts live in the ciphertext.
+  const pollMsgIds = msgs.filter((m) => m.kind === 'poll').map((m) => m.id);
+  const pollByMsg = new Map();
+  if (pollMsgIds.length) {
+    const { data: polls } = await supabase.from('polls')
+      .select('id, message_id, multi_choice, anonymous, closes_at, closed_at')
+      .in('message_id', pollMsgIds);
+    const pollIds = (polls || []).map((p) => p.id);
+    const { data: opts } = pollIds.length
+      ? await supabase.from('poll_options').select('id, poll_id, position').in('poll_id', pollIds).order('position')
+      : { data: [] };
+    const { data: votes } = pollIds.length
+      ? await supabase.from('poll_votes').select('poll_id, option_id, user_id').in('poll_id', pollIds)
+      : { data: [] };
+    const tallies = {};
+    const myVotes = {};
+    for (const v of (votes || [])) {
+      tallies[v.poll_id] = tallies[v.poll_id] || {};
+      tallies[v.poll_id][v.option_id] = (tallies[v.poll_id][v.option_id] || 0) + 1;
+      if (v.user_id === req.auth.userId) {
+        myVotes[v.poll_id] = myVotes[v.poll_id] || [];
+        myVotes[v.poll_id].push(v.option_id);
+      }
+    }
+    for (const p of (polls || [])) {
+      pollByMsg.set(p.message_id, {
+        id: p.id,
+        multi_choice: p.multi_choice,
+        anonymous: p.anonymous,
+        closes_at: p.closes_at,
+        closed_at: p.closed_at,
+        options: (opts || []).filter((o) => o.poll_id === p.id).map((o) => ({ id: o.id, position: o.position })),
+        tallies: tallies[p.id] || {},
+        my_votes: myVotes[p.id] || [],
+      });
+    }
+  }
+
   const out = msgs.map((m) => {
     const c = copyMap.get(m.id);
     const agg = aggMap.get(m.id);
@@ -125,6 +164,7 @@ async function listMessages(req, res, { params, query }) {
       any_delivered_at: agg?.anyDelivered || false,
       any_read_at: agg?.anyRead || false,
       reactions: rxnMap.get(m.id) || [],
+      poll: pollByMsg.get(m.id) || null,
     };
   });
 

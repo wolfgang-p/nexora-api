@@ -7,7 +7,7 @@ const { broadcastToDevices } = require('../ws/dispatch');
 const { pushToDevices } = require('../push');
 const { check, send429 } = require('../middleware/rateLimit');
 
-const VALID_KINDS = ['text', 'image', 'voice', 'video', 'file', 'location'];
+const VALID_KINDS = ['text', 'image', 'voice', 'video', 'file', 'location', 'poll'];
 
 /**
  * POST /messages   (authed)
@@ -173,6 +173,43 @@ async function sendMessage(req, res) {
     return serverError(res, 'Could not persist recipients', mrErr);
   }
 
+  // Poll spec: server assigns option IDs so votes can be tallied by ID
+  // without the server ever seeing the option text. The client seals
+  // {question, options: [{id, text}]} inside the message ciphertext and
+  // only sends us the plaintext meta (count, flags).
+  let pollOptions = null;
+  if (kind === 'poll' && body.poll) {
+    const p = body.poll;
+    const optionCount = Math.max(2, Math.min(20, Number(p.option_count) || 0));
+    if (!optionCount) {
+      await supabase.from('messages').delete().eq('id', msg.id);
+      return badRequest(res, 'poll.option_count required (2..20)');
+    }
+    const { data: poll, error: pErr } = await supabase.from('polls').insert({
+      message_id: msg.id,
+      conversation_id: convId,
+      creator_user_id: req.auth.userId,
+      multi_choice: !!p.multi_choice,
+      anonymous: !!p.anonymous,
+      closes_at: p.closes_at ? new Date(p.closes_at).toISOString() : null,
+    }).select('*').single();
+    if (pErr) {
+      await supabase.from('messages').delete().eq('id', msg.id);
+      return serverError(res, 'Could not create poll', pErr);
+    }
+    const optRows = Array.from({ length: optionCount }, (_, i) => ({
+      poll_id: poll.id, position: i,
+    }));
+    const { data: optInserted, error: oErr } = await supabase.from('poll_options')
+      .insert(optRows).select('id, position').order('position');
+    if (oErr) {
+      await supabase.from('polls').delete().eq('id', poll.id);
+      await supabase.from('messages').delete().eq('id', msg.id);
+      return serverError(res, 'Could not create poll options', oErr);
+    }
+    pollOptions = { poll, options: optInserted };
+  }
+
   // Fire WS push (async) + push notifications to offline devices
   const recipientDeviceIds = recipients.map((r) => r.device_id);
   broadcastToDevices(
@@ -243,7 +280,17 @@ async function sendMessage(req, res) {
     console.warn('[webhook emit]', err?.message);
   }
 
-  created(res, { message: envelopeFor(msg) });
+  const envelope = envelopeFor(msg);
+  if (pollOptions) {
+    envelope.poll = {
+      id: pollOptions.poll.id,
+      multi_choice: pollOptions.poll.multi_choice,
+      anonymous: pollOptions.poll.anonymous,
+      closes_at: pollOptions.poll.closes_at,
+      options: pollOptions.options, // [{ id, position }]
+    };
+  }
+  created(res, { message: envelope });
 }
 
 function previewLabelFor(kind) {
@@ -252,6 +299,7 @@ function previewLabelFor(kind) {
     case 'voice': return '🎤 Neue Sprachnachricht';
     case 'video': return '🎞️ Neues Video';
     case 'file':  return '📎 Neue Datei';
+    case 'poll':  return '📊 Neue Umfrage';
     default:      return 'Neue Nachricht';
   }
 }

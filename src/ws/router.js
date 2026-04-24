@@ -18,12 +18,21 @@ async function route(ws, data) {
       return send(ws, { type: 'pong', t: Date.now() });
 
     case 'typing.start':
-    case 'typing.stop':
+    case 'typing.stop': {
+      // Look up the sender's device kind so receivers can render
+      // "tippt auf iPhone…" instead of just "tippt…". Cached after
+      // first hit per socket to avoid a DB round-trip on every keystroke.
+      if (!ws._deviceKind) {
+        const { data: d } = await supabase.from('devices').select('kind').eq('id', deviceId).maybeSingle();
+        ws._deviceKind = d?.kind || 'unknown';
+      }
       return forwardToConversation(data.conversation_id, userId, deviceId, {
         type: data.type,
         conversation_id: data.conversation_id,
         user_id: userId,
+        device_kind: ws._deviceKind,
       });
+    }
 
     // WebRTC signaling — relay to a specific peer device
     case 'webrtc.offer':
