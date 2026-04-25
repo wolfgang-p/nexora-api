@@ -82,6 +82,10 @@ async function stats(req, res) {
     },
     drive: { total_files: await countRows('workspace_files') },
     threads: { reads_last_24h: await countRowsGt('thread_reads', 'last_read_at', hoursAgo(24)) },
+    feedback: {
+      new: await countWhere('feedback', 'status', 'eq', 'new'),
+      last_24h: await countRowsGt('feedback', 'created_at', hoursAgo(24)),
+    },
     server: {
       uptime_sec: Math.round(process.uptime()),
       rss_mb: Math.round(process.memoryUsage().rss / 1_048_576),

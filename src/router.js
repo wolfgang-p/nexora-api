@@ -42,6 +42,7 @@ const polls = require('./polls');
 const threads = require('./messages/thread');
 const stories = require('./stories');
 const drive = require('./drive');
+const feedback = require('./feedback');
 
 /**
  * Tiny route matcher. Routes are tuples: [method, pattern, handler, { auth }]
@@ -250,6 +251,12 @@ r('DELETE', '/stories/:id',                      stories.destroy);
 r('POST',   '/stories/:id/view',                 stories.markViewed);
 r('POST',   '/stories/:id/reactions',            stories.react);
 r('DELETE', '/stories/:id/reactions/:emoji',     stories.unreact);
+
+// --- Feedback ---
+r('POST',   '/feedback',                        feedback.submit);
+r('GET',    '/admin/feedback',                  feedback.adminList,    { admin: true });
+r('GET',    '/admin/feedback/:id',              feedback.adminGet,     { admin: true });
+r('POST',   '/admin/feedback/:id/resolve',      feedback.adminResolve, { admin: true });
 
 // --- Workspace Drive ---
 r('GET',    '/workspaces/:id/files',               drive.list);

@@ -134,9 +134,16 @@ async function unblock(req, res, { params }) {
  */
 async function listBlocked(req, res) {
   const { data } = await supabase.from('user_blocks')
-    .select('blocked_user_id, reason, created_at')
-    .eq('blocker_user_id', req.auth.userId);
-  ok(res, { blocks: data || [] });
+    .select('blocked_user_id, reason, created_at, users:blocked_user_id (id, username, display_name, avatar_url, phone_e164)')
+    .eq('blocker_user_id', req.auth.userId)
+    .order('created_at', { ascending: false });
+  const blocks = (data || []).map((b) => ({
+    blocked_user_id: b.blocked_user_id,
+    reason: b.reason,
+    created_at: b.created_at,
+    user: Array.isArray(b.users) ? b.users[0] : b.users,
+  }));
+  ok(res, { blocks });
 }
 
 module.exports = { me, updateMe, search, getUser, discover, block, unblock, listBlocked };
