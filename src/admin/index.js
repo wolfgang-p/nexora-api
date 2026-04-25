@@ -74,6 +74,14 @@ async function stats(req, res) {
     calls: { active: activeCalls },
     polls: { total: await countRows('polls'), votes_last_24h: await countRowsGt('poll_votes', 'voted_at', hoursAgo(24)) },
     public_channels: { total: await supabase.from('conversations').select('*', { count: 'exact', head: true }).not('public_slug', 'is', null).then((r) => r.count || 0) },
+    stories: {
+      active: await supabase.from('stories').select('*', { count: 'exact', head: true })
+        .is('deleted_at', null).gt('expires_at', new Date().toISOString())
+        .then((r) => r.count || 0),
+      views_last_24h: await countRowsGt('story_views', 'viewed_at', hoursAgo(24)),
+    },
+    drive: { total_files: await countRows('workspace_files') },
+    threads: { reads_last_24h: await countRowsGt('thread_reads', 'last_read_at', hoursAgo(24)) },
     server: {
       uptime_sec: Math.round(process.uptime()),
       rss_mb: Math.round(process.memoryUsage().rss / 1_048_576),

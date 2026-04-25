@@ -147,6 +147,17 @@ async function sendMessage(req, res) {
     }
   }
 
+  // Resolve thread_root_id for replies. Reply to a root → thread starts
+  // at the root. Reply to a reply → collapse into the existing thread so
+  // we stay flat (like Slack). If the parent can't be found, fall back
+  // to a standalone reply with no thread.
+  let threadRootId = null;
+  if (replyTo) {
+    const { data: parent } = await supabase.from('messages')
+      .select('id, thread_root_id').eq('id', replyTo).maybeSingle();
+    if (parent) threadRootId = parent.thread_root_id || parent.id;
+  }
+
   // Insert envelope
   const { data: msg, error: msgErr } = await supabase.from('messages').insert({
     conversation_id: convId,
@@ -154,6 +165,7 @@ async function sendMessage(req, res) {
     sender_device_id: req.auth.deviceId,
     kind,
     reply_to_message_id: replyTo,
+    thread_root_id: threadRootId,
     media_object_id: mediaId,
     forwarded_at: forwarded ? new Date().toISOString() : null,
   }).select('*').single();
@@ -312,6 +324,7 @@ function envelopeFor(m) {
     sender_device_id: m.sender_device_id,
     kind: m.kind,
     reply_to_message_id: m.reply_to_message_id,
+    thread_root_id: m.thread_root_id ?? null,
     media_object_id: m.media_object_id,
     system_payload: m.system_payload ?? null,
     created_at: m.created_at,

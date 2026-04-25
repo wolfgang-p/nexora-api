@@ -148,6 +148,33 @@ async function listMessages(req, res, { params, query }) {
     }
   }
 
+  // Thread metadata: for each message shown in the page, if it's a root
+  // (id appears in some other message's thread_root_id), attach
+  // {reply_count, latest_reply_at, last_read_at}.
+  const threadMeta = new Map();
+  if (ids.length) {
+    const { data: replies } = await supabase.from('messages')
+      .select('thread_root_id, created_at')
+      .in('thread_root_id', ids)
+      .order('created_at', { ascending: false });
+    for (const r of (replies || [])) {
+      const cur = threadMeta.get(r.thread_root_id) || { reply_count: 0, latest_reply_at: null };
+      cur.reply_count += 1;
+      if (!cur.latest_reply_at || r.created_at > cur.latest_reply_at) cur.latest_reply_at = r.created_at;
+      threadMeta.set(r.thread_root_id, cur);
+    }
+    if (threadMeta.size > 0) {
+      const { data: reads } = await supabase.from('thread_reads')
+        .select('thread_root_id, last_read_at')
+        .eq('user_id', req.auth.userId)
+        .in('thread_root_id', Array.from(threadMeta.keys()));
+      for (const rd of (reads || [])) {
+        const m = threadMeta.get(rd.thread_root_id);
+        if (m) m.last_read_at = rd.last_read_at;
+      }
+    }
+  }
+
   const out = msgs.map((m) => {
     const c = copyMap.get(m.id);
     const agg = aggMap.get(m.id);
@@ -165,6 +192,7 @@ async function listMessages(req, res, { params, query }) {
       any_read_at: agg?.anyRead || false,
       reactions: rxnMap.get(m.id) || [],
       poll: pollByMsg.get(m.id) || null,
+      thread: threadMeta.get(m.id) || null,
     };
   });
 

@@ -39,6 +39,9 @@ const adminMetrics = require('./admin/metrics');
 const gdpr = require('./users/gdpr');
 const publicChannels = require('./public/channels');
 const polls = require('./polls');
+const threads = require('./messages/thread');
+const stories = require('./stories');
+const drive = require('./drive');
 
 /**
  * Tiny route matcher. Routes are tuples: [method, pattern, handler, { auth }]
@@ -234,6 +237,27 @@ r('POST',   '/polls/:id/vote',     polls.vote);
 r('DELETE', '/polls/:id/vote',     polls.retract);
 r('GET',    '/polls/:id/results',  polls.results);
 r('POST',   '/polls/:id/close',    polls.close);
+
+// --- Threads ---
+r('GET',  '/messages/:id/thread',      threads.listThread);
+r('POST', '/messages/:id/thread/read', threads.markThreadRead);
+
+// --- Stories ---
+r('POST',   '/stories',                          stories.create);
+r('GET',    '/stories/feed',                     stories.feed);
+r('GET',    '/stories/:id',                      stories.getOne);
+r('DELETE', '/stories/:id',                      stories.destroy);
+r('POST',   '/stories/:id/view',                 stories.markViewed);
+r('POST',   '/stories/:id/reactions',            stories.react);
+r('DELETE', '/stories/:id/reactions/:emoji',     stories.unreact);
+
+// --- Workspace Drive ---
+r('GET',    '/workspaces/:id/files',               drive.list);
+r('POST',   '/workspaces/:id/files',               drive.attach);
+r('GET',    '/workspaces/:id/files/:file_id',      drive.getOne);
+r('PUT',    '/workspaces/:id/files/:file_id',      drive.update);
+r('DELETE', '/workspaces/:id/files/:file_id',      drive.destroy);
+r('POST',   '/workspaces/:id/files/:file_id/pin',  drive.pin);
 
 // --- Admin: reports moderation ---
 r('GET',    '/admin/reports',             reports.adminListReports,  { admin: true });
