@@ -203,6 +203,9 @@ r('POST',   '/admin/users/:id/set-admin', admin.setAdmin,         { admin: true 
 r('POST',   '/admin/users/:id/ban',       reports.adminBanUser,   { admin: true });
 r('DELETE', '/admin/users/:id/ban',       reports.adminUnbanUser, { admin: true });
 r('DELETE', '/admin/users/:id',           admin.deleteUser,       { admin: true });
+// --- Admin: workspaces ---
+r('GET',    '/admin/workspaces',          admin.listWorkspaces,    { admin: true });
+r('DELETE', '/admin/workspaces/:id',      admin.dissolveWorkspace, { admin: true });
 // --- Admin: conversations ---
 r('GET',    '/admin/conversations',       admin.listConversations, { admin: true });
 r('GET',    '/admin/conversations/:id',   admin.getConversation,   { admin: true });

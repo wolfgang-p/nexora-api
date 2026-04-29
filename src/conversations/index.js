@@ -30,13 +30,27 @@ async function listConversations(req, res) {
   let latestByConv = new Map();
   if (convIds.length > 0) {
     const { data: msgs } = await supabase
-      .from('messages').select('id, conversation_id, kind, created_at, sender_user_id')
+      .from('messages').select('id, conversation_id, kind, created_at, sender_user_id, sender_device_id')
       .in('conversation_id', convIds)
       .is('deleted_at', null)
       .order('created_at', { ascending: false });
     for (const m of msgs || []) {
       if (!latestByConv.has(m.conversation_id)) latestByConv.set(m.conversation_id, m);
     }
+  }
+
+  // Pull THIS device's recipient copies for those latest messages so the
+  // client can decrypt the preview locally on first load — no need to
+  // open every chat individually to get "Letzte Nachricht: …".
+  let cipherByMsgId = new Map();
+  const latestMsgIds = Array.from(latestByConv.values()).map((m) => m.id);
+  if (latestMsgIds.length > 0) {
+    const { data: copies } = await supabase
+      .from('message_recipients')
+      .select('message_id, ciphertext, nonce')
+      .in('message_id', latestMsgIds)
+      .eq('recipient_device_id', req.auth.deviceId);
+    for (const c of copies || []) cipherByMsgId.set(c.message_id, c);
   }
 
   // For direct chats we need the peer's display name + avatar (so the UI can
@@ -60,18 +74,24 @@ async function listConversations(req, res) {
 
   const out = memberships
     .filter((m) => m.conversation && !m.conversation.deleted_at)
-    .map((m) => ({
-      ...m.conversation,
-      my_role: m.role,
-      notif_level: m.notif_level,
-      muted_until: m.muted_until,
-      pinned_at: m.pinned_at,
-      archived_at: m.archived_at,
-      last_read_message_id: m.last_read_message_id,
-      last_read_at: m.last_read_at,
-      last_message: latestByConv.get(m.conversation_id) || null,
-      peer: peerByConv.get(m.conversation_id) || null,
-    }));
+    .map((m) => {
+      const last = latestByConv.get(m.conversation_id) || null;
+      const cipher = last ? cipherByMsgId.get(last.id) : null;
+      return {
+        ...m.conversation,
+        my_role: m.role,
+        notif_level: m.notif_level,
+        muted_until: m.muted_until,
+        pinned_at: m.pinned_at,
+        archived_at: m.archived_at,
+        last_read_message_id: m.last_read_message_id,
+        last_read_at: m.last_read_at,
+        last_message: last,
+        last_message_ciphertext: cipher?.ciphertext || null,
+        last_message_nonce: cipher?.nonce || null,
+        peer: peerByConv.get(m.conversation_id) || null,
+      };
+    });
 
   ok(res, { conversations: out });
 }

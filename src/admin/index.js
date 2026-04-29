@@ -208,6 +208,61 @@ async function deleteUser(req, res, { params }) {
   ok(res, { ok: true });
 }
 
+// ── Workspaces ─────────────────────────────────────────────────────
+
+/** GET /admin/workspaces?q=…&limit=50 */
+async function listWorkspaces(req, res, { query }) {
+  const limit = clampInt(query.limit, 50, 1, 200);
+  let qb = supabase.from('workspaces')
+    .select('id, name, slug, created_at, deleted_at, owner_user_id')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (query.q) qb = qb.or(`name.ilike.%${query.q}%,slug.ilike.%${query.q}%`);
+  const { data, error } = await qb;
+  if (error) return serverError(res, 'Query failed', error);
+  ok(res, { workspaces: data || [] });
+}
+
+/**
+ * DELETE /admin/workspaces/:id   { confirm: true }
+ *
+ * Soft-deletes the workspace. All channels in the workspace are also
+ * soft-deleted; members lose access on next request via the membership
+ * filter (`left_at` is set so they can't post / read). API keys are
+ * revoked. Webhooks are deactivated. Audit-logged.
+ */
+async function dissolveWorkspace(req, res, { params }) {
+  const body = await readJson(req).catch(() => ({})) || {};
+  if (!body.confirm) return badRequest(res, 'confirm: true required');
+
+  const now = new Date().toISOString();
+  const { error: wsErr } = await supabase.from('workspaces')
+    .update({ deleted_at: now }).eq('id', params.id);
+  if (wsErr) return serverError(res, 'Dissolve failed', wsErr);
+
+  // Cascade: channels → conversations.deleted_at
+  await supabase.from('conversations').update({ deleted_at: now })
+    .eq('workspace_id', params.id);
+  // Cascade: workspace members → set left_at
+  await supabase.from('workspace_members').update({ left_at: now })
+    .eq('workspace_id', params.id).is('left_at', null);
+  // Revoke all API keys for this workspace
+  await supabase.from('api_keys').update({ revoked_at: now })
+    .eq('workspace_id', params.id).is('revoked_at', null);
+  // Deactivate workspace webhooks
+  await supabase.from('webhooks').update({ active: false })
+    .eq('workspace_id', params.id);
+
+  audit({
+    userId: req.auth.userId, deviceId: req.auth.deviceId,
+    action: 'admin.workspace.dissolve',
+    targetType: 'workspace', targetId: params.id,
+    metadata: { reason: body.reason || null }, req,
+  });
+
+  ok(res, { ok: true });
+}
+
 // ── Conversations ──────────────────────────────────────────────────
 
 /** GET /admin/conversations?q=…&kind=direct|group|channel&public=1&limit=50 */
@@ -484,6 +539,8 @@ module.exports = {
   stats,
   // Users
   listUsers, getUser, forceLogout, setAdmin, deleteUser,
+  // Workspaces
+  listWorkspaces, dissolveWorkspace,
   // Conversations
   listConversations, getConversation,
   // Media

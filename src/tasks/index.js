@@ -5,27 +5,47 @@ const { ok, created, badRequest, notFound, forbidden, readJson, serverError } = 
 const { audit } = require('../util/audit');
 
 async function list(req, res, { query }) {
-  // Left-join the source message so every task from a chat carries a
-  // `source_conversation_id` — the client can render "Aus #Chat" without
-  // a second round-trip.
+  // Default scope: tasks I created OR I'm assigned to OR I'm a member of
+  // the workspace they belong to. Without this the endpoint leaked
+  // every task in the DB to every authed user — a peer's accepted AI
+  // suggestion in a shared chat would show up in my Tasks tab.
+  const me = req.auth.userId;
+
+  // Pull the workspaces I belong to so we can include workspace-scoped
+  // tasks I might not have created myself.
+  const { data: myWorkspaceMemberships } = await supabase
+    .from('workspace_members').select('workspace_id')
+    .eq('user_id', me).is('left_at', null);
+  const myWorkspaceIds = (myWorkspaceMemberships || []).map((m) => m.workspace_id);
+
   let q = supabase.from('tasks').select(`
     *,
     source_message:messages!tasks_source_message_id_fkey(id, conversation_id)
   `).is('deleted_at', null);
+
+  // Build the OR-clause: creator or assignee or workspace-member.
+  const orParts = [
+    `creator_user_id.eq.${me}`,
+    `assignee_user_id.eq.${me}`,
+  ];
+  if (myWorkspaceIds.length > 0) {
+    orParts.push(`workspace_id.in.(${myWorkspaceIds.join(',')})`);
+  }
+  q = q.or(orParts.join(','));
+
   if (query.workspace_id) q = q.eq('workspace_id', query.workspace_id);
-  if (query.assignee_id) q = q.eq('assignee_user_id', query.assignee_id);
+  if (query.assignee_id && query.assignee_id !== 'me') q = q.eq('assignee_user_id', query.assignee_id);
   if (query.status) q = q.eq('status', query.status);
   if (query.source) q = q.eq('source', query.source);
   if (query.mine === 'true' || query.assignee_id === 'me') {
-    q = q.or(`creator_user_id.eq.${req.auth.userId},assignee_user_id.eq.${req.auth.userId}`);
+    // Tighten the default scope to JUST creator/assignee (drop workspace).
+    q = q.or(`creator_user_id.eq.${me},assignee_user_id.eq.${me}`);
   }
   q = q.order('created_at', { ascending: false }).limit(
     Math.min(Number(query.limit) || 100, 500),
   );
   const { data, error } = await q;
   if (error) return serverError(res, 'Query failed', error);
-  // Flatten the join into a top-level field so TS clients don't have to
-  // chase a nested object.
   const tasks = (data || []).map((t) => ({
     ...t,
     source_conversation_id: t.source_message?.conversation_id || null,
@@ -55,6 +75,19 @@ async function create(req, res) {
       .select('role').eq('workspace_id', row.workspace_id).eq('user_id', req.auth.userId)
       .is('left_at', null).maybeSingle();
     if (!me) return forbidden(res, 'Not a workspace member');
+  }
+  // If a chat-anchored task is created, verify the user is a member of
+  // that conversation. Otherwise an attacker could spy on a chat by
+  // creating a task and reading source_conversation_id back via list().
+  if (row.source_message_id) {
+    const { data: msg } = await supabase.from('messages')
+      .select('conversation_id').eq('id', row.source_message_id).maybeSingle();
+    if (msg?.conversation_id) {
+      const { data: m } = await supabase.from('conversation_members')
+        .select('user_id').eq('conversation_id', msg.conversation_id)
+        .eq('user_id', req.auth.userId).is('left_at', null).maybeSingle();
+      if (!m) return forbidden(res, 'Not a member of source conversation');
+    }
   }
   const { data, error } = await supabase.from('tasks').insert(row).select('*').single();
   if (error) return serverError(res, 'Create failed', error);
