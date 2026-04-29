@@ -121,6 +121,12 @@ async function summarize(req, res) {
 
 /**
  * POST /ai/translate  { text, target: 'de' | 'en' | 'fr' | ... }
+ *
+ * Returns `{ translated, source_lang, same_as_target }`. When the
+ * detected source already matches the target, `translated` is just
+ * the original text and `same_as_target = true` so the auto-translate
+ * client logic can render the message untouched without showing a
+ * "Translated from XX" badge.
  */
 async function translate(req, res) {
   if (!enabled()) return disabled(res);
@@ -130,15 +136,25 @@ async function translate(req, res) {
   if (!text) return badRequest(res, 'text required');
   if (text.length > 4000) return badRequest(res, 'text too long');
 
-  const gate = check([rl(`ai:translate:${req.auth.userId}`, 200, 60 * 60 * 1000)]);
+  const gate = check([rl(`ai:translate:${req.auth.userId}`, 400, 60 * 60 * 1000)]);
   if (!gate.ok) return send429(res, gate);
 
   try {
     const out = await chat([
-      { role: 'system', content: `You are a translator. Output ONLY the translation, no prose, no quotes. Preserve formatting and emojis.` },
-      { role: 'user', content: `Translate to ${target}:\n${text}` },
-    ], { maxTokens: 600, temperature: 0 });
-    ok(res, { translated: out.text.trim() });
+      { role: 'system', content:
+        `You translate user-submitted chat messages. Reply STRICTLY as JSON with shape ` +
+        `{"source_lang":"<ISO 639-1 code>","translated":"<text>"}. ` +
+        `If the source language is already the same as the requested target, set translated equal ` +
+        `to the original text. Preserve emojis, formatting, line breaks, mentions, urls.` },
+      { role: 'user', content: `Target language: ${target}\n\nMessage:\n${text}` },
+    ], { json: true, maxTokens: 700, temperature: 0 });
+
+    let parsed = null;
+    try { parsed = JSON.parse(out.text); } catch { /* fall through */ }
+    const sourceLang = (parsed?.source_lang || '').toString().slice(0, 8).toLowerCase() || null;
+    const translated = (parsed?.translated || out.text || '').toString().trim();
+    const sameAsTarget = !!sourceLang && sourceLang.split('-')[0] === target.split('-')[0].toLowerCase();
+    ok(res, { translated, source_lang: sourceLang, same_as_target: sameAsTarget });
   } catch (err) {
     if (err instanceof AiDisabled) return disabled(res);
     serverError(res, 'AI translate failed', err);

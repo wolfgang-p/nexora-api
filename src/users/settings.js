@@ -16,6 +16,7 @@ const FIELDS = [
   'theme_mode', 'theme_accent', 'chat_wallpaper',
   'animated_avatar', 'reduce_motion', 'larger_text', 'high_contrast',
   'read_receipts_enabled', 'typing_indicators_enabled',
+  'auto_translate_enabled', 'auto_translate_target', 'auto_translate_show_original',
 ];
 
 async function get(req, res) {

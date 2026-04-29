@@ -34,10 +34,14 @@ async function route(ws, data) {
       });
     }
 
-    // WebRTC signaling — relay to a specific peer device
+    // WebRTC signaling — relay to a specific peer device.
+    // `webrtc.media-state` is sent when a peer toggles their mic or
+    // camera mid-call so the other side can show an avatar instead of
+    // a black RTCView when the camera goes off.
     case 'webrtc.offer':
     case 'webrtc.answer':
     case 'webrtc.ice':
+    case 'webrtc.media-state':
       if (!data.target_device_id) return send(ws, { type: 'error', error: 'target_device_id required' });
       return sendTo(data.target_device_id, {
         type: data.type,

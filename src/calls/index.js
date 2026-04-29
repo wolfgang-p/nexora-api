@@ -39,6 +39,12 @@ async function start(req, res) {
     .is('left_at', null).maybeSingle();
   if (!me) return forbidden(res);
 
+  // We need the conversation kind to decide huddle-vs-direct semantics
+  // for the reachability gate further down.
+  const { data: conv } = await supabase.from('conversations')
+    .select('kind, workspace_id').eq('id', body.conversation_id).maybeSingle();
+  const isHuddle = conv?.kind === 'group' || conv?.kind === 'channel';
+
   const { data: call, error } = await supabase.from('calls').insert({
     conversation_id: body.conversation_id,
     kind: body.kind,
@@ -63,7 +69,14 @@ async function start(req, res) {
   // Are any of them currently online via WS or have a push token? If
   // neither, the client shows "Nicht erreichbar" immediately and saves
   // the caller from waiting 45 s on a call that will never ring.
-  let reachable = false;
+  //
+  // For group/channel "huddles" we never short-circuit — the call stays
+  // open as a meeting room that other members can join when they come
+  // online (matches Slack huddle / Discord voice-channel UX). The
+  // "Direkt abgebrochen"-bug in workspace calls was this gate firing
+  // when the caller was the only member currently with an online device
+  // or push token registered.
+  let reachable = isHuddle;          // huddles always count as reachable
   let targetDeviceIds = [];
 
   if (otherIds.length) {
@@ -75,41 +88,43 @@ async function start(req, res) {
       .select('device_id').in('device_id', targetDeviceIds);
     const hasPush = (tokens?.length || 0) > 0;
     const anyOnline = targetDeviceIds.some((id) => deviceOnline(id));
-    reachable = anyOnline || hasPush;
-
-    if (reachable) {
-      broadcastToDevices(targetDeviceIds, () => ({
-        type: 'call.incoming',
-        call_id: call.id,
-        conversation_id: call.conversation_id,
-        kind: call.kind,
-        from_user_id: req.auth.userId,
-        from_device_id: req.auth.deviceId,
-      }));
-
-      // Resolve caller display name for the push banner
-      const { data: caller } = await supabase.from('users')
-        .select('display_name, username').eq('id', req.auth.userId).maybeSingle();
-      const fromName = caller?.display_name || caller?.username || 'Unbekannt';
-
-      pushIncomingCall(targetDeviceIds, {
-        callId: call.id,
-        conversationId: call.conversation_id,
-        kind: call.kind,
-        fromName,
-      }).catch((err) => console.error('[calls] push failed', err?.message || err));
-    }
+    if (!isHuddle) reachable = anyOnline || hasPush;
   }
 
-  // Server-side miss timer: if the call never gets joined or ended within
-  // RING_TIMEOUT_MS, we auto-end it server-side as "missed" and tell
-  // everyone. This handles the case where the caller's client crashes
-  // mid-call or where the callee just ignores the ring forever.
+  // Ring everyone we can reach (huddle or 1:1). For huddles with zero
+  // online peers this is a no-op — fine; they'll get the call from the
+  // unread-list / chat header when they come online.
+  if (reachable && targetDeviceIds.length) {
+    broadcastToDevices(targetDeviceIds, () => ({
+      type: 'call.incoming',
+      call_id: call.id,
+      conversation_id: call.conversation_id,
+      kind: call.kind,
+      from_user_id: req.auth.userId,
+      from_device_id: req.auth.deviceId,
+    }));
+
+    const { data: caller } = await supabase.from('users')
+      .select('display_name, username').eq('id', req.auth.userId).maybeSingle();
+    const fromName = caller?.display_name || caller?.username || 'Unbekannt';
+
+    pushIncomingCall(targetDeviceIds, {
+      callId: call.id,
+      conversationId: call.conversation_id,
+      kind: call.kind,
+      fromName,
+    }).catch((err) => console.error('[calls] push failed', err?.message || err));
+  }
+
   if (reachable) {
-    setTimeout(() => autoEndIfUnanswered(call.id).catch(() => {}), RING_TIMEOUT_MS).unref();
+    // Auto-end timer applies to 1:1 calls (where "missed" means
+    // something). For huddles we let them sit until the initiator
+    // explicitly hangs up — same as a Zoom/Slack meeting room.
+    if (!isHuddle) {
+      setTimeout(() => autoEndIfUnanswered(call.id).catch(() => {}), RING_TIMEOUT_MS).unref();
+    }
   } else {
-    // No reachable devices at all — immediately mark the call as ended
-    // with "unreachable" so the history entry reflects reality.
+    // 1:1 with no reachable peer devices → mark unreachable.
     supabase.from('calls').update({
       ended_at: new Date().toISOString(),
       end_reason: 'unreachable',

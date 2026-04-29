@@ -9,9 +9,13 @@ const { disconnectDevice } = require('../ws/dispatch');
  * GET /devices   (self)
  */
 async function listOwnDevices(req, res) {
+  // `identity_public_key` is needed so the story composer can include
+  // the user's own other devices as recipients of their story (so the
+  // story is visible across all of their logins). Without it, the
+  // client tries to b64-decode `undefined` and throws "Invalid encoding".
   const { data: devices } = await supabase
     .from('devices')
-    .select('id, kind, label, fingerprint, enrolled_at, last_seen_at, revoked_at, user_agent, location_hint')
+    .select('id, kind, label, fingerprint, identity_public_key, enrolled_at, last_seen_at, revoked_at, user_agent, location_hint')
     .eq('user_id', req.auth.userId)
     .order('enrolled_at', { ascending: false });
   ok(res, { devices: devices || [] });
