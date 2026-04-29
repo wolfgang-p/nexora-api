@@ -43,6 +43,11 @@ const threads = require('./messages/thread');
 const stories = require('./stories');
 const drive = require('./drive');
 const feedback = require('./feedback');
+const inbound = require('./webhooks/inbound');
+const inboundAdmin = require('./webhooks/inbound_admin');
+const communities = require('./communities');
+const calendar = require('./calendar');
+const userSettings = require('./users/settings');
 
 /**
  * Tiny route matcher. Routes are tuples: [method, pattern, handler, { auth }]
@@ -246,6 +251,9 @@ r('POST',   '/polls/:id/close',    polls.close);
 r('GET',  '/messages/:id/thread',      threads.listThread);
 r('POST', '/messages/:id/thread/read', threads.markThreadRead);
 
+// --- Public-key lookup (used by story decryption + non-conv E2E paths) ---
+r('GET',    '/devices/:id/public-key',           stories.getDevicePublicKey);
+
 // --- Stories ---
 r('POST',   '/stories',                          stories.create);
 r('GET',    '/stories/feed',                     stories.feed);
@@ -254,6 +262,35 @@ r('DELETE', '/stories/:id',                      stories.destroy);
 r('POST',   '/stories/:id/view',                 stories.markViewed);
 r('POST',   '/stories/:id/reactions',            stories.react);
 r('DELETE', '/stories/:id/reactions/:emoji',     stories.unreact);
+
+// --- Settings (theme + a11y) ---
+r('GET',    '/users/me/settings', userSettings.get);
+r('PUT',    '/users/me/settings', userSettings.update);
+
+// --- Communities ---
+r('GET',    '/communities',                              communities.list);
+r('POST',   '/communities',                              communities.create);
+r('GET',    '/communities/:id',                          communities.getOne);
+r('PUT',    '/communities/:id',                          communities.update);
+r('DELETE', '/communities/:id',                          communities.destroy);
+r('POST',   '/communities/:id/workspaces',               communities.attachWorkspace);
+r('DELETE', '/communities/:id/workspaces/:ws_id',        communities.detachWorkspace);
+r('POST',   '/communities/:id/members',                  communities.addMember);
+r('DELETE', '/communities/:id/members/:user_id',         communities.removeMember);
+
+// --- Calendar (Apple/Google) ---
+r('GET',    '/calendar/links',                            calendar.listLinks);
+r('POST',   '/calendar/oauth/:provider/begin',            calendar.oauthBegin);
+r('POST',   '/calendar/oauth/:provider/finish',           calendar.oauthFinish);
+r('DELETE', '/calendar/links/:provider',                  calendar.revoke);
+r('POST',   '/calendar/events',                           calendar.createEvent);
+r('GET',    '/calendar/events',                           calendar.listEvents);
+
+// --- Inbound webhooks (bots) ---
+r('POST',   '/hooks/in/:token',                           inbound.receive,        { auth: false });
+r('GET',    '/conversations/:id/inbound-webhooks',        inboundAdmin.list);
+r('POST',   '/conversations/:id/inbound-webhooks',        inboundAdmin.create);
+r('DELETE', '/conversations/:id/inbound-webhooks/:hook_id', inboundAdmin.destroy);
 
 // --- Feedback ---
 r('POST',   '/feedback',                        feedback.submit);

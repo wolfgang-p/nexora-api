@@ -52,6 +52,7 @@ async function create(req, res) {
 
   const { data: story, error } = await supabase.from('stories').insert({
     creator_user_id: req.auth.userId,
+    creator_device_id: req.auth.deviceId,
     workspace_id: body.workspace_id || null,
     kind,
     media_object_id: body.media_object_id || null,
@@ -105,7 +106,7 @@ async function feed(req, res, { query }) {
   if (idMap.size === 0) return ok(res, { feed: [] });
 
   let qb = supabase.from('stories')
-    .select('id, creator_user_id, workspace_id, kind, media_object_id, width_hint, height_hint, duration_ms, expires_at, created_at, deleted_at, users:creator_user_id (id, username, display_name, avatar_url)')
+    .select('id, creator_user_id, creator_device_id, workspace_id, kind, media_object_id, width_hint, height_hint, duration_ms, expires_at, created_at, deleted_at, users:creator_user_id (id, username, display_name, avatar_url)')
     .in('id', Array.from(idMap.keys()))
     .is('deleted_at', null)
     .order('created_at', { ascending: false });
@@ -136,6 +137,7 @@ async function feed(req, res, { query }) {
   const feedRows = (stories || []).map((s) => ({
     id: s.id,
     creator: s.users,
+    creator_device_id: s.creator_device_id,
     workspace_id: s.workspace_id,
     kind: s.kind,
     media_object_id: s.media_object_id,
@@ -234,4 +236,21 @@ async function destroy(req, res, { params }) {
   ok(res, { ok: true });
 }
 
-module.exports = { create, feed, getOne, markViewed, react, unreact, destroy };
+/**
+ * GET /devices/:id/public-key — used by the story decryption path
+ * (and any other E2E flow where the receiver needs the sender's PK
+ * but doesn't share a conversation with them). The endpoint only
+ * returns the PUBLIC half — never the secret.
+ *
+ * Lives here for proximity to the story flow that needs it; mounted
+ * under /devices in the router.
+ */
+async function getDevicePublicKey(req, res, { params }) {
+  const { data: d } = await supabase.from('devices')
+    .select('id, identity_public_key, user_id')
+    .eq('id', params.id).maybeSingle();
+  if (!d) return notFound(res, 'Device not found');
+  ok(res, { device_id: d.id, user_id: d.user_id, identity_public_key: d.identity_public_key });
+}
+
+module.exports = { create, feed, getOne, markViewed, react, unreact, destroy, getDevicePublicKey };
