@@ -67,6 +67,8 @@ async function create(req, res) {
     due_at: body.due_at || null,
     workspace_id: body.workspace_id || null,
     list_id: body.list_id || null,
+    parent_id: body.parent_id || null,
+    recurrence: body.recurrence ? String(body.recurrence).slice(0, 500) : null,
     creator_user_id: req.auth.userId,
     assignee_user_id: body.assignee_user_id || req.auth.userId,
   };
@@ -126,7 +128,7 @@ async function update(req, res, { params }) {
   if (!allowed) return forbidden(res);
 
   const patch = {};
-  for (const k of ['title', 'description', 'priority', 'status', 'due_at', 'assignee_user_id', 'list_id']) {
+  for (const k of ['title', 'description', 'priority', 'status', 'due_at', 'assignee_user_id', 'list_id', 'parent_id', 'recurrence']) {
     if (body[k] !== undefined) patch[k] = body[k];
   }
   if (patch.status === 'done' && !task.completed_at) {
@@ -141,6 +143,30 @@ async function update(req, res, { params }) {
   const { data, error } = await supabase.from('tasks').update(patch).eq('id', params.id)
     .select('*').single();
   if (error) return serverError(res, 'Update failed', error);
+
+  // Spawn next instance for recurring tasks when this one is marked
+  // done. We compute a simple next-due via DTSTART + rrule freq; the
+  // server only handles common cases (DAILY / WEEKLY / MONTHLY /
+  // YEARLY with INTERVAL=1). More complex RRULEs need a real lib.
+  if (patch.status === 'done' && task.recurrence && task.due_at) {
+    const next = nextOccurrence(new Date(task.due_at), task.recurrence);
+    if (next) {
+      await supabase.from('tasks').insert({
+        title: task.title,
+        description: task.description,
+        priority: task.priority,
+        status: 'open',
+        source: 'manual',
+        due_at: next.toISOString(),
+        workspace_id: task.workspace_id,
+        list_id: task.list_id,
+        parent_id: task.parent_id,
+        recurrence: task.recurrence,
+        creator_user_id: task.creator_user_id,
+        assignee_user_id: task.assignee_user_id,
+      });
+    }
+  }
   audit({ userId: req.auth.userId, deviceId: req.auth.deviceId, workspaceId: task.workspace_id,
     action: 'task.update', targetType: 'task', targetId: params.id, metadata: patch, req });
   try {
@@ -183,4 +209,78 @@ async function createList(req, res) {
   created(res, { list: data });
 }
 
-module.exports = { list, create, update, destroy, listLists, createList };
+/**
+ * Compute the next occurrence of a recurring task. Supports the four
+ * common RFC5545 frequencies (DAILY/WEEKLY/MONTHLY/YEARLY) with a
+ * positive integer INTERVAL. Returns null for unsupported rules — the
+ * caller treats that as "no next instance" and stops the chain.
+ */
+function nextOccurrence(from, rrule) {
+  if (!from || !rrule) return null;
+  const m = String(rrule).match(/FREQ=(DAILY|WEEKLY|MONTHLY|YEARLY)(?:;INTERVAL=(\d+))?/i);
+  if (!m) return null;
+  const freq = m[1].toUpperCase();
+  const interval = Math.max(1, Number(m[2]) || 1);
+  const d = new Date(from.getTime());
+  switch (freq) {
+    case 'DAILY':   d.setDate(d.getDate() + interval); break;
+    case 'WEEKLY':  d.setDate(d.getDate() + 7 * interval); break;
+    case 'MONTHLY': d.setMonth(d.getMonth() + interval); break;
+    case 'YEARLY':  d.setFullYear(d.getFullYear() + interval); break;
+    default: return null;
+  }
+  // Stop after a year of generated instances even if the user spams
+  // "Mark done" — defensive cap.
+  if (d.getTime() - Date.now() > 5 * 365 * 86400_000) return null;
+  return d;
+}
+
+// ── Time tracking ───────────────────────────────────────────────────────
+
+/**
+ * POST /tasks/:id/timer/start  → opens an entry (ended_at = null).
+ * POST /tasks/:id/timer/stop   → closes the open entry; ignores if none.
+ * GET  /tasks/:id/timer        → list entries + total seconds.
+ */
+async function startTimer(req, res, { params }) {
+  const { data: task } = await supabase.from('tasks').select('id, deleted_at').eq('id', params.id).maybeSingle();
+  if (!task || task.deleted_at) return notFound(res);
+
+  // Clear any other open entries for this user (one-active-at-a-time).
+  await supabase.from('task_time_entries')
+    .update({ ended_at: new Date().toISOString() })
+    .eq('user_id', req.auth.userId).is('ended_at', null);
+
+  const { data, error } = await supabase.from('task_time_entries').insert({
+    task_id: params.id,
+    user_id: req.auth.userId,
+    started_at: new Date().toISOString(),
+    note: typeof req.body?.note === 'string' ? req.body.note.slice(0, 200) : null,
+  }).select('*').single();
+  if (error) return serverError(res, 'Start failed', error);
+  ok(res, { entry: data });
+}
+
+async function stopTimer(req, res, { params }) {
+  const { data, error } = await supabase.from('task_time_entries')
+    .update({ ended_at: new Date().toISOString() })
+    .eq('task_id', params.id).eq('user_id', req.auth.userId).is('ended_at', null)
+    .select('*');
+  if (error) return serverError(res, 'Stop failed', error);
+  ok(res, { entries: data || [] });
+}
+
+async function listTimer(req, res, { params }) {
+  const { data: entries } = await supabase.from('task_time_entries')
+    .select('*').eq('task_id', params.id)
+    .order('started_at', { ascending: false }).limit(200);
+  let total = 0;
+  for (const e of entries || []) {
+    const start = new Date(e.started_at).getTime();
+    const end = e.ended_at ? new Date(e.ended_at).getTime() : Date.now();
+    if (Number.isFinite(start) && Number.isFinite(end) && end > start) total += end - start;
+  }
+  ok(res, { entries: entries || [], total_seconds: Math.round(total / 1000) });
+}
+
+module.exports = { list, create, update, destroy, listLists, createList, startTimer, stopTimer, listTimer };

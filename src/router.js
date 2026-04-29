@@ -188,6 +188,9 @@ r('PUT', '/tasks/:id', tasks.update);
 r('DELETE', '/tasks/:id', tasks.destroy);
 r('GET', '/tasks/lists', tasks.listLists);
 r('POST', '/tasks/lists', tasks.createList);
+r('GET',  '/tasks/:id/timer',       tasks.listTimer);
+r('POST', '/tasks/:id/timer/start', tasks.startTimer);
+r('POST', '/tasks/:id/timer/stop',  tasks.stopTimer);
 
 // --- Calls ---
 r('GET', '/calls', calls.list);
@@ -315,6 +318,8 @@ r('POST',   '/calendar/oauth/:provider/finish',           calendar.oauthFinish);
 r('DELETE', '/calendar/links/:provider',                  calendar.revoke);
 r('POST',   '/calendar/events',                           calendar.createEvent);
 r('GET',    '/calendar/events',                           calendar.listEvents);
+r('PUT',    '/calendar/events/:id',                       calendar.updateEvent);
+r('DELETE', '/calendar/events/:id',                       calendar.deleteEvent);
 
 // --- Inbound webhooks (bots) ---
 r('POST',   '/hooks/in/:token',                           inbound.receive,        { auth: false });
@@ -335,6 +340,8 @@ r('GET',    '/workspaces/:id/files/:file_id',      drive.getOne);
 r('PUT',    '/workspaces/:id/files/:file_id',      drive.update);
 r('DELETE', '/workspaces/:id/files/:file_id',      drive.destroy);
 r('POST',   '/workspaces/:id/files/:file_id/pin',  drive.pin);
+r('POST',   '/workspaces/:id/files/folders',           drive.createFolder);
+r('GET',    '/workspaces/:id/files/:file_id/versions', drive.listVersions);
 
 // --- Admin: reports moderation ---
 r('GET',    '/admin/reports',             reports.adminListReports,  { admin: true });
