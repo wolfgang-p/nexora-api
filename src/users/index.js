@@ -62,6 +62,18 @@ async function getUser(req, res, { params }) {
     .select('id, username, display_name, avatar_url, account_type, last_seen_at, bio, status_text')
     .eq('id', params.id).is('deleted_at', null).maybeSingle();
   if (!user) return notFound(res);
+
+  // Privacy: respect the target's `show_last_seen` setting. The
+  // calling user's own profile is always shown in full — it's their
+  // data either way.
+  if (user.id !== req.auth.userId) {
+    const { data: settings } = await supabase.from('user_settings')
+      .select('show_last_seen').eq('user_id', user.id).maybeSingle();
+    if (settings && settings.show_last_seen === false) {
+      user.last_seen_at = null;
+    }
+  }
+
   ok(res, { user });
 }
 

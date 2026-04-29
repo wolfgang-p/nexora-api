@@ -17,6 +17,7 @@ const FIELDS = [
   'animated_avatar', 'reduce_motion', 'larger_text', 'high_contrast',
   'read_receipts_enabled', 'typing_indicators_enabled',
   'auto_translate_enabled', 'auto_translate_target', 'auto_translate_show_original',
+  'show_last_seen',
 ];
 
 async function get(req, res) {
