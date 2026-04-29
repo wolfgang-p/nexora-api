@@ -29,6 +29,10 @@ async function route(ws, data) {
       return forwardToConversation(data.conversation_id, userId, deviceId, {
         type: data.type,
         conversation_id: data.conversation_id,
+        // Optional: when set, the receiver scopes this typing event to a
+        // thread (so the main chat doesn't say "tippt…" for someone who
+        // is just replying inside a thread, and vice versa).
+        thread_root_id: data.thread_root_id || null,
         user_id: userId,
         device_kind: ws._deviceKind,
       });

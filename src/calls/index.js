@@ -313,4 +313,31 @@ async function end(req, res, { params }) {
   ok(res, { call: updated });
 }
 
-module.exports = { start, join, leave, end, reject, list, iceServers };
+/**
+ * GET /calls/:id
+ * Returns a single call I'm a participant or member of. Used by the
+ * mobile client to hydrate the incoming-call screen on cold start
+ * after a push tap, when the original `call.incoming` WS event has
+ * already been consumed (or never delivered, since the device was
+ * killed).
+ */
+async function get(req, res, { params }) {
+  const { data: call } = await supabase.from('calls').select('*').eq('id', params.id).maybeSingle();
+  if (!call) return notFound(res);
+
+  const { data: me } = await supabase.from('conversation_members').select('user_id')
+    .eq('conversation_id', call.conversation_id).eq('user_id', req.auth.userId)
+    .is('left_at', null).maybeSingle();
+  if (!me) return forbidden(res);
+
+  // Resolve the initiator's currently-active device for the WebRTC
+  // signaling target. Falls back to most-recently-enrolled device if
+  // multiple are active — same heuristic the start endpoint uses.
+  const { data: initiatorDev } = await supabase.from('devices')
+    .select('id').eq('user_id', call.initiator_user_id).is('revoked_at', null)
+    .order('enrolled_at', { ascending: false }).limit(1).maybeSingle();
+
+  ok(res, { call, initiator_device_id: initiatorDev?.id || null });
+}
+
+module.exports = { start, join, leave, end, reject, list, get, iceServers };

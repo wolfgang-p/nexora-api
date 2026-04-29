@@ -126,4 +126,97 @@ async function viewPublic(req, res, { params }) {
   });
 }
 
-module.exports = { publish, updatePublic, unpublish, viewPublic };
+/**
+ * GET /public/channels — list discoverable channels, paged. Returns
+ * the same shape `viewPublic` returns minus `recent_activity`. Public
+ * (no auth) so unauthenticated marketing surfaces can render it; ranked
+ * by member count + recency.
+ */
+async function listPublic(req, res, { query }) {
+  const limit = Math.max(1, Math.min(100, Number(query.limit) || 50));
+  const search = (query.q || '').toString().trim().toLowerCase();
+
+  let qb = supabase.from('conversations')
+    .select('id, kind, title, public_slug, public_title, public_description, public_read_only, published_at')
+    .not('public_slug', 'is', null)
+    .is('deleted_at', null)
+    .order('published_at', { ascending: false })
+    .limit(limit);
+
+  const { data: convs, error } = await qb;
+  if (error) return serverError(res, 'Query failed', error);
+
+  let rows = convs || [];
+  if (search) {
+    rows = rows.filter((c) =>
+      (c.public_title || c.title || '').toLowerCase().includes(search) ||
+      (c.public_description || '').toLowerCase().includes(search),
+    );
+  }
+
+  // Member counts in one go.
+  const ids = rows.map((c) => c.id);
+  const memberCounts = new Map();
+  if (ids.length) {
+    // Supabase doesn't support GROUP BY in a friendly way through PostgREST;
+    // do N small head-counts. Fine for ~50 results.
+    await Promise.all(ids.map(async (id) => {
+      const { count } = await supabase.from('conversation_members')
+        .select('*', { count: 'exact', head: true })
+        .eq('conversation_id', id).is('left_at', null);
+      memberCounts.set(id, count || 0);
+    }));
+  }
+
+  ok(res, {
+    channels: rows.map((c) => ({
+      id: c.id,
+      kind: c.kind,
+      slug: c.public_slug,
+      title: c.public_title || c.title,
+      description: c.public_description,
+      read_only: !!c.public_read_only,
+      member_count: memberCounts.get(c.id) || 0,
+      published_at: c.published_at,
+    })),
+  });
+}
+
+/**
+ * POST /public/channels/:slug/join (authed)
+ * Adds the caller as a regular member of the channel. No-op if already
+ * a member. Read-only channels still allow joining — only posting is
+ * restricted (existing only_admins_send / public_read_only gate).
+ */
+async function joinPublic(req, res, { params }) {
+  const { data: conv } = await supabase.from('conversations')
+    .select('id, kind').eq('public_slug', params.slug)
+    .is('deleted_at', null).maybeSingle();
+  if (!conv) return notFound(res, 'Channel not found');
+
+  const { data: existing } = await supabase.from('conversation_members')
+    .select('user_id, left_at').eq('conversation_id', conv.id)
+    .eq('user_id', req.auth.userId).maybeSingle();
+
+  if (existing && !existing.left_at) {
+    return ok(res, { conversation_id: conv.id, already_member: true });
+  }
+  if (existing && existing.left_at) {
+    // Re-join: clear the left_at flag.
+    await supabase.from('conversation_members').update({ left_at: null })
+      .eq('conversation_id', conv.id).eq('user_id', req.auth.userId);
+  } else {
+    await supabase.from('conversation_members').insert({
+      conversation_id: conv.id, user_id: req.auth.userId, role: 'member',
+    });
+  }
+
+  audit({
+    userId: req.auth.userId, deviceId: req.auth.deviceId,
+    action: 'conversation.join_public', targetType: 'conversation', targetId: conv.id, req,
+  });
+
+  ok(res, { conversation_id: conv.id, already_member: false });
+}
+
+module.exports = { publish, updatePublic, unpublish, viewPublic, listPublic, joinPublic };

@@ -162,15 +162,30 @@ async function translate(req, res) {
 }
 
 /**
- * POST /ai/transcribe  (multipart: field `audio`)
- * For voice-note transcription. Whisper via OpenAI. Returns plain text.
+ * POST /ai/transcribe  (raw audio body)
+ * Whisper-style voice-note transcription.
+ *
+ * Query params (all optional):
+ *   ?target=de|en|fr|...  → if set, ALSO translate the transcript
+ *                          into this language (uses the same JSON
+ *                          translate prompt as /ai/translate).
+ *   ?detect=1             → return `source_lang` even when not
+ *                          translating (cheap heuristic from the LLM).
+ *
+ * Returns:
+ *   {
+ *     text:         "<original transcript>",
+ *     source_lang:  "<ISO 639-1 or null>",
+ *     translated:   "<text in target> | null",
+ *     same_as_target: boolean,
+ *     target_lang:  "<requested target> | null"
+ *   }
  */
-async function transcribeVoice(req, res) {
+async function transcribeVoice(req, res, { query }) {
   if (!enabled()) return disabled(res);
-  const gate = check([rl(`ai:transcribe:${req.auth.userId}`, 60, 60 * 60 * 1000)]);
+  const gate = check([rl(`ai:transcribe:${req.auth.userId}`, 80, 60 * 60 * 1000)]);
   if (!gate.ok) return send429(res, gate);
 
-  // Buffer raw body (octet-stream upload)
   const chunks = [];
   let total = 0;
   for await (const c of req) {
@@ -182,11 +197,43 @@ async function transcribeVoice(req, res) {
   if (audio.length === 0) return badRequest(res, 'empty upload');
 
   const mime = req.headers['content-type'] || 'audio/m4a';
-  const lang = req.headers['x-audio-lang'] || undefined;
+  const langHint = req.headers['x-audio-lang'] || undefined;
+  const target = (query?.target || '').toString().trim().toLowerCase() || null;
+  const wantDetect = target || query?.detect === '1';
 
   try {
-    const text = await transcribe(audio, { mimeType: mime, filename: 'clip.m4a', language: lang });
-    ok(res, { text });
+    const text = await transcribe(audio, { mimeType: mime, filename: 'clip.m4a', language: langHint });
+
+    let source_lang = null;
+    let translated = null;
+    let same_as_target = false;
+
+    if (wantDetect && text) {
+      // One LLM round-trip handles BOTH detect + (optional) translate.
+      const sys = target
+        ? `Detect the source language (ISO 639-1 code) of the user message and translate it ` +
+          `to the requested target. Reply STRICTLY as JSON ` +
+          `{"source_lang":"<code>","translated":"<text>"}. If the source matches the target, ` +
+          `set translated equal to the original.`
+        : `Detect the source language (ISO 639-1 code) of the user message. Reply STRICTLY as ` +
+          `JSON {"source_lang":"<code>"}.`;
+      const user = target ? `Target language: ${target}\n\nMessage:\n${text}` : `Message:\n${text}`;
+      try {
+        const out = await chat([
+          { role: 'system', content: sys },
+          { role: 'user', content: user },
+        ], { json: true, maxTokens: 700, temperature: 0 });
+        let parsed = null;
+        try { parsed = JSON.parse(out.text); } catch { /* ignore */ }
+        source_lang = (parsed?.source_lang || '').toString().slice(0, 8).toLowerCase() || null;
+        if (target) {
+          translated = (parsed?.translated || '').toString().trim() || null;
+          same_as_target = !!source_lang && source_lang.split('-')[0] === target.split('-')[0];
+        }
+      } catch { /* leave defaults */ }
+    }
+
+    ok(res, { text, source_lang, translated, same_as_target, target_lang: target });
   } catch (err) {
     if (err instanceof AiDisabled) return disabled(res);
     serverError(res, 'AI transcribe failed', err);

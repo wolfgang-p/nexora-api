@@ -27,11 +27,39 @@ async function tick() {
   if (ticking) return;
   ticking = true;
   try {
-    await Promise.all([fireReminders(), fireScheduledMessages(), sweepRetention()]);
+    await Promise.all([fireReminders(), fireScheduledMessages(), sweepRetention(), sweepDisappearing()]);
   } catch (err) {
     console.error('[scheduler] tick failed', err?.message || err);
   } finally {
     ticking = false;
+  }
+}
+
+// Disappearing-message sweep: every 60 s, soft-delete messages older
+// than each conversation's `message_ttl_seconds`. Pinned messages are
+// exempt — they're an explicit "keep" signal that overrides the TTL.
+let lastDisappearingSweep = 0;
+const DISAPPEARING_SWEEP_INTERVAL_MS = 60 * 1000;
+async function sweepDisappearing() {
+  if (Date.now() - lastDisappearingSweep < DISAPPEARING_SWEEP_INTERVAL_MS) return;
+  lastDisappearingSweep = Date.now();
+
+  const { data: convs } = await supabase
+    .from('conversations')
+    .select('id, message_ttl_seconds')
+    .not('message_ttl_seconds', 'is', null);
+  if (!convs?.length) return;
+
+  for (const c of convs) {
+    const ttl = Number(c.message_ttl_seconds);
+    if (!ttl || ttl < 60) continue;
+    const cutoff = new Date(Date.now() - ttl * 1000).toISOString();
+    await supabase.from('messages')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('conversation_id', c.id)
+      .lt('created_at', cutoff)
+      .is('deleted_at', null)
+      .is('pinned_at', null);
   }
 }
 

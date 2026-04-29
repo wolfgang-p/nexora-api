@@ -226,4 +226,78 @@ async function joinByCode(req, res) {
   ok(res, { workspace_id: invite.workspace_id });
 }
 
-module.exports = { list, create, get, update, destroy, createInvite, joinByCode, createChannel };
+/**
+ * POST /workspaces/:id/invite-by-contact
+ * Body: { email?: string, phone?: string, role?: 'member'|'admin' }
+ *
+ * Generates a one-shot invite code and dispatches a join link via
+ * email or SMS. The recipient does NOT need to be a Koro user — the
+ * link drops them into onboarding which finishes with `joinByCode`.
+ */
+async function inviteByContact(req, res, { params }) {
+  const body = await readJson(req).catch(() => null);
+  const email = (body?.email || '').toString().trim().toLowerCase();
+  const phone = (body?.phone || '').toString().trim();
+  if (!email && !phone) return badRequest(res, 'email or phone required');
+
+  // Admin gate (same as createInvite)
+  const { data: me } = await supabase.from('workspace_members').select('role')
+    .eq('workspace_id', params.id).eq('user_id', req.auth.userId).is('left_at', null).maybeSingle();
+  if (!me || !['owner', 'admin'].includes(me.role)) return forbidden(res);
+
+  const { data: ws } = await supabase.from('workspaces').select('name')
+    .eq('id', params.id).maybeSingle();
+  const wsName = ws?.name || 'Koro Workspace';
+
+  const code = randomBase64Url(10).toLowerCase();
+  const { data: invite, error } = await supabase.from('workspace_invites').insert({
+    workspace_id: params.id, code, role: body?.role || 'member',
+    created_by: req.auth.userId,
+    max_uses: 1,
+    expires_at: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+  }).select('*').single();
+  if (error) return serverError(res, 'Create failed', error);
+
+  const base = (process.env.PUBLIC_WEB_URL || 'https://koro.chat').replace(/\/$/, '');
+  const link = `${base}/join/${code}`;
+
+  // Resolve inviter display label
+  const { data: inviter } = await supabase.from('users')
+    .select('display_name, username').eq('id', req.auth.userId).maybeSingle();
+  const inviterName = inviter?.display_name || inviter?.username || 'Jemand';
+
+  let dispatched = null;
+  try {
+    if (email) {
+      const { sendEmail } = require('../email');
+      await sendEmail({
+        to: email,
+        subject: `${inviterName} hat dich zu ${wsName} eingeladen`,
+        text:
+          `Hallo,\n\n${inviterName} hat dich zu „${wsName}" auf Koro eingeladen. ` +
+          `Tritt mit diesem Link bei:\n\n${link}\n\nDer Link läuft in 14 Tagen ab.`,
+        html:
+          `<p>Hallo,</p><p><strong>${inviterName}</strong> hat dich zu „<strong>${wsName}</strong>" auf ` +
+          `Koro eingeladen.</p><p><a href="${link}">${link}</a></p><p>Der Link läuft in 14 Tagen ab.</p>`,
+      });
+      dispatched = 'email';
+    } else if (phone) {
+      const { sendSms } = require('../sms');
+      await sendSms(phone,
+        `${inviterName} hat dich zu „${wsName}" auf Koro eingeladen: ${link} (gültig 14 Tage)`);
+      dispatched = 'sms';
+    }
+  } catch (err) {
+    // Invite is already created — return it so the inviter at least has the
+    // link to share manually.
+    return ok(res, { invite, link, dispatched: null, dispatch_error: err?.message || String(err) });
+  }
+
+  audit({ userId: req.auth.userId, deviceId: req.auth.deviceId,
+    action: 'workspace.invite_by_contact', targetType: 'workspace', targetId: params.id,
+    metadata: { dispatched, code }, req });
+
+  ok(res, { invite, link, dispatched });
+}
+
+module.exports = { list, create, get, update, destroy, createInvite, joinByCode, createChannel, inviteByContact };

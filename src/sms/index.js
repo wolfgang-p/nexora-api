@@ -93,4 +93,22 @@ async function messagebird(to, body) {
   return { mode: 'messagebird' };
 }
 
-module.exports = { sendOtp };
+/**
+ * Send an arbitrary SMS body. Same provider plumbing as `sendOtp` but
+ * exposed for non-OTP flows like workspace invitations. Throws on
+ * delivery failure; returns the provider's metadata on success.
+ */
+async function sendSms(phoneE164, body) {
+  const provider = (process.env.SMS_PROVIDER || '').toLowerCase();
+  if (!provider) {
+    if (config.isProd) throw new Error('[sms] SMS_PROVIDER not configured');
+    // eslint-disable-next-line no-console
+    console.error(`[DEV SMS] ${phoneE164} → ${body}`);
+    return { mode: 'dev' };
+  }
+  if (provider === 'twilio')      return twilio(phoneE164, body);
+  if (provider === 'messagebird') return messagebird(phoneE164, body);
+  throw new Error(`Unknown SMS_PROVIDER: ${provider}`);
+}
+
+module.exports = { sendOtp, sendSms };

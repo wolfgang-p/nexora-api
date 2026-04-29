@@ -14,8 +14,9 @@ async function listConversations(req, res) {
     .from('conversation_members')
     .select(`
       conversation_id, role, notif_level, muted_until, pinned_at, archived_at,
+      auto_translate_override,
       last_read_message_id, last_read_at,
-      conversation:conversations!inner(id, kind, workspace_id, title, avatar_url, only_admins_send, created_at, updated_at, deleted_at)
+      conversation:conversations!inner(id, kind, workspace_id, title, avatar_url, only_admins_send, message_ttl_seconds, created_at, updated_at, deleted_at)
     `)
     .eq('user_id', req.auth.userId)
     .is('left_at', null);
@@ -84,6 +85,7 @@ async function listConversations(req, res) {
         muted_until: m.muted_until,
         pinned_at: m.pinned_at,
         archived_at: m.archived_at,
+        auto_translate_override: m.auto_translate_override,
         last_read_message_id: m.last_read_message_id,
         last_read_at: m.last_read_at,
         last_message: last,
@@ -177,6 +179,13 @@ async function updateConversation(req, res, { params }) {
   if (isAdmin) {
     for (const k of ['only_admins_send', 'only_admins_edit_info']) {
       if (body[k] !== undefined) patch[k] = Boolean(body[k]);
+    }
+    // Disappearing messages — null disables TTL, otherwise the value is
+    // the lifetime in seconds. Cap at 30d so admins can't accidentally
+    // pin "delete after 1 year" semantics that look broken to users.
+    if (body.message_ttl_seconds !== undefined) {
+      const v = body.message_ttl_seconds;
+      patch.message_ttl_seconds = v == null ? null : Math.max(60, Math.min(60 * 60 * 24 * 30, Number(v) || 0));
     }
   }
   if (Object.keys(patch).length === 0) return ok(res, { conversation: conv });
@@ -360,7 +369,61 @@ async function getConversationInfo(req, res, { params }) {
   });
 }
 
+/**
+ * PUT /conversations/:id/notification-level
+ * Body: { level: 'all' | 'mentions' | 'muted' }
+ * Per-user setting on conversation_members.
+ */
+async function setNotificationLevel(req, res, { params }) {
+  const body = await readJson(req).catch(() => null);
+  const lvl = body?.level;
+  if (!['all', 'mentions', 'muted'].includes(lvl)) return badRequest(res, 'level required');
+  const { error } = await supabase.from('conversation_members')
+    .update({ notif_level: lvl })
+    .eq('conversation_id', params.id)
+    .eq('user_id', req.auth.userId)
+    .is('left_at', null);
+  if (error) return serverError(res, 'Update failed', error);
+  ok(res, { ok: true });
+}
+
+/**
+ * POST /conversations/:id/archive       — flip on
+ * DELETE /conversations/:id/archive     — flip off
+ */
+async function archive(req, res, { params }) {
+  const at = req.method === 'DELETE' ? null : new Date().toISOString();
+  await supabase.from('conversation_members')
+    .update({ archived_at: at })
+    .eq('conversation_id', params.id)
+    .eq('user_id', req.auth.userId)
+    .is('left_at', null);
+  ok(res, { ok: true });
+}
+
+/**
+ * PUT /conversations/:id/auto-translate
+ * Body: { override: 'on' | 'off' | null }
+ *
+ * Per-user, per-conversation override of the user-level auto-translate
+ * setting. Useful for "this one chat I want to read in the original
+ * language" without losing global auto-translate.
+ */
+async function setAutoTranslateOverride(req, res, { params }) {
+  const body = await readJson(req).catch(() => null);
+  const v = body?.override;
+  if (v !== null && v !== 'on' && v !== 'off') return badRequest(res, 'override must be on|off|null');
+  const { error } = await supabase.from('conversation_members')
+    .update({ auto_translate_override: v })
+    .eq('conversation_id', params.id)
+    .eq('user_id', req.auth.userId)
+    .is('left_at', null);
+  if (error) return serverError(res, 'Update failed', error);
+  ok(res, { ok: true });
+}
+
 module.exports = {
   listConversations, createConversation, updateConversation,
   addMembers, removeMember, changeRole, getConversationInfo,
+  setNotificationLevel, archive, setAutoTranslateOverride,
 };

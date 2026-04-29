@@ -47,6 +47,10 @@ const inbound = require('./webhooks/inbound');
 const inboundAdmin = require('./webhooks/inbound_admin');
 const communities = require('./communities');
 const calendar = require('./calendar');
+const messagesPin = require('./messages/pin');
+const messagesEdits = require('./messages/edit_history');
+const drafts = require('./conversations/drafts');
+const og = require('./util/og');
 const userSettings = require('./users/settings');
 
 /**
@@ -111,6 +115,10 @@ r('PUT', '/conversations/:id', conversations.updateConversation);
 r('POST', '/conversations/:id/members', conversations.addMembers);
 r('DELETE', '/conversations/:id/members/:userId', conversations.removeMember);
 r('PUT', '/conversations/:id/members/:userId/role', conversations.changeRole);
+r('PUT',    '/conversations/:id/notification-level', conversations.setNotificationLevel);
+r('PUT',    '/conversations/:id/auto-translate',     conversations.setAutoTranslateOverride);
+r('POST',   '/conversations/:id/archive',           conversations.archive);
+r('DELETE', '/conversations/:id/archive',           conversations.archive);
 
 // --- Messages ---
 r('POST', '/messages', messagesSend.sendMessage);
@@ -136,6 +144,23 @@ r('GET', '/messages/:id/reactions', reactions.list);
 r('POST', '/messages/:id/reactions', reactions.add);
 r('DELETE', '/messages/:id/reactions/:emoji', reactions.remove);
 
+// Pinned messages
+r('POST',   '/messages/:id/pin',      messagesPin.pin);
+r('DELETE', '/messages/:id/pin',      messagesPin.unpin);
+r('GET',    '/conversations/:id/pins', messagesPin.listPins);
+
+// Edit history (sender-only)
+r('GET',  '/messages/:id/edits', messagesEdits.list);
+r('POST', '/messages/:id/edits', messagesEdits.append);
+
+// Per-conversation drafts (sealed to user's own devices)
+r('GET',    '/conversations/:id/draft', drafts.get);
+r('PUT',    '/conversations/:id/draft', drafts.put);
+r('DELETE', '/conversations/:id/draft', drafts.destroy);
+
+// Open Graph link preview
+r('GET', '/util/og', og.fetchOg);
+
 // --- Media (local disk) ---
 r('POST', '/media/upload', media.upload);
 // Avatars live in /media/:id with conversation_id=NULL and need to be
@@ -152,6 +177,7 @@ r('GET', '/workspaces/:id', workspaces.get);
 r('PUT', '/workspaces/:id', workspaces.update);
 r('DELETE', '/workspaces/:id', workspaces.destroy);
 r('POST', '/workspaces/:id/invites', workspaces.createInvite);
+r('POST', '/workspaces/:id/invite-by-contact', workspaces.inviteByContact);
 r('POST', '/workspaces/:id/channels', workspaces.createChannel);
 r('POST', '/workspaces/join', workspaces.joinByCode);
 
@@ -166,6 +192,7 @@ r('POST', '/tasks/lists', tasks.createList);
 // --- Calls ---
 r('GET', '/calls', calls.list);
 r('GET', '/calls/ice-servers', calls.iceServers);
+r('GET', '/calls/:id', calls.get);
 r('POST', '/calls', calls.start);
 r('POST', '/calls/:id/join', calls.join);
 r('POST', '/calls/:id/reject', calls.reject);
@@ -240,6 +267,8 @@ r('POST',   '/conversations/:id/public',  publicChannels.publish);
 r('PUT',    '/conversations/:id/public',  publicChannels.updatePublic);
 r('DELETE', '/conversations/:id/public',  publicChannels.unpublish);
 r('GET',    '/public/channels/:slug',     publicChannels.viewPublic, { auth: false });
+r('GET',    '/public/channels',            publicChannels.listPublic, { auth: false });
+r('POST',   '/public/channels/:slug/join', publicChannels.joinPublic);
 
 // --- Polls ---
 r('POST',   '/polls/:id/vote',     polls.vote);
@@ -257,6 +286,7 @@ r('GET',    '/devices/:id/public-key',           stories.getDevicePublicKey);
 // --- Stories ---
 r('POST',   '/stories',                          stories.create);
 r('GET',    '/stories/feed',                     stories.feed);
+r('GET',    '/stories/mine/reactions',           stories.myReactionSummary);
 r('GET',    '/stories/:id',                      stories.getOne);
 r('DELETE', '/stories/:id',                      stories.destroy);
 r('POST',   '/stories/:id/view',                 stories.markViewed);

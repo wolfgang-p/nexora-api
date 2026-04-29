@@ -253,4 +253,38 @@ async function getDevicePublicKey(req, res, { params }) {
   ok(res, { device_id: d.id, user_id: d.user_id, identity_public_key: d.identity_public_key });
 }
 
-module.exports = { create, feed, getOne, markViewed, react, unreact, destroy, getDevicePublicKey };
+/**
+ * GET /stories/mine/reactions
+ * Aggregates reactions OTHERS placed on MY active stories so the
+ * home screen can show a heart-badge with the latest reactor.
+ */
+async function myReactionSummary(req, res) {
+  const sinceIso = new Date().toISOString();
+  const { data: myStories } = await supabase.from('stories')
+    .select('id').eq('creator_user_id', req.auth.userId)
+    .is('deleted_at', null).gt('expires_at', sinceIso);
+  const sIds = (myStories || []).map((s) => s.id);
+  if (!sIds.length) return ok(res, { count: 0, by_story: {}, latest: null });
+
+  const { data: reactions } = await supabase.from('story_reactions')
+    .select('story_id, user_id, emoji, created_at, users:user_id (display_name, username)')
+    .in('story_id', sIds)
+    .neq('user_id', req.auth.userId)
+    .order('created_at', { ascending: false })
+    .limit(200);
+  const list = reactions || [];
+
+  const byStory = {};
+  for (const r of list) {
+    if (!byStory[r.story_id]) byStory[r.story_id] = [];
+    byStory[r.story_id].push({ user_id: r.user_id, emoji: r.emoji, created_at: r.created_at });
+  }
+  const latest = list[0] ? {
+    user: list[0].users?.display_name || list[0].users?.username || 'Jemand',
+    emoji: list[0].emoji,
+    at: list[0].created_at,
+  } : null;
+  ok(res, { count: list.length, by_story: byStory, latest });
+}
+
+module.exports = { create, feed, getOne, markViewed, react, unreact, destroy, getDevicePublicKey, myReactionSummary };

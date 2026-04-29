@@ -109,15 +109,20 @@ async function updateDevice(req, res, { params }) {
 async function registerPushToken(req, res) {
   const { readJson, badRequest } = require('../util/response');
   const body = await readJson(req).catch(() => null);
-  if (!body?.token) return badRequest(res, 'token required');
+  if (!body?.token && !body?.voip_token) return badRequest(res, 'token or voip_token required');
 
-  await supabase.from('push_tokens').upsert({
+  // Patch only the columns the client actually provided so a subsequent
+  // VoIP-only registration (issued lazily after PushKit init) doesn't
+  // wipe the regular APNs/FCM token.
+  const patch = {
     device_id: req.auth.deviceId,
     platform: body.platform || req.headers['x-platform'] || 'unknown',
-    token: body.token,
     last_used_at: new Date().toISOString(),
-  }, { onConflict: 'device_id' });
+  };
+  if (body.token)      patch.token = body.token;
+  if (body.voip_token) patch.voip_token = body.voip_token;
 
+  await supabase.from('push_tokens').upsert(patch, { onConflict: 'device_id' });
   ok(res, { ok: true });
 }
 
