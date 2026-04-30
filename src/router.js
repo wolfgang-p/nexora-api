@@ -52,6 +52,7 @@ const messagesEdits = require('./messages/edit_history');
 const drafts = require('./conversations/drafts');
 const og = require('./util/og');
 const userSettings = require('./users/settings');
+const bio = require('./bio');
 
 /**
  * Tiny route matcher. Routes are tuples: [method, pattern, handler, { auth }]
@@ -272,6 +273,16 @@ r('DELETE', '/conversations/:id/public',  publicChannels.unpublish);
 r('GET',    '/public/channels/:slug',     publicChannels.viewPublic, { auth: false });
 r('GET',    '/public/channels',            publicChannels.listPublic, { auth: false });
 r('POST',   '/public/channels/:slug/join', publicChannels.joinPublic);
+
+// --- koro.bio (LinkTree) ---
+r('GET',    '/bio/me',                       bio.getMine);
+r('PUT',    '/bio/me',                       bio.updateMine);
+r('POST',   '/bio/me/links',                 bio.createLink);
+r('PUT',    '/bio/me/links/:id',             bio.updateLink);
+r('DELETE', '/bio/me/links/:id',             bio.deleteLink);
+r('POST',   '/bio/me/links/reorder',         bio.reorder);
+r('GET',    '/bio/public/:username',         bio.viewPublic, { auth: false });
+r('POST',   '/bio/public/:username/click',   bio.clickPublic, { auth: false });
 
 // --- Polls ---
 r('POST',   '/polls/:id/vote',     polls.vote);
