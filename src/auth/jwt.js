@@ -29,4 +29,27 @@ function verifyAccess(token) {
   return { userId: payload.sub, deviceId: payload.did };
 }
 
-module.exports = { signAccess, verifyAccess };
+/**
+ * Short-lived (5-min) "login challenge" token used to bridge the OTP
+ * step → TOTP step during a login that requires 2FA. NOT a session
+ * token: only `/auth/totp/verify` accepts it.
+ */
+function signLoginChallenge({ userId, phone }) {
+  return jwt.sign(
+    { sub: userId, phone, typ: 'login_challenge' },
+    config.jwt.secret,
+    { algorithm: 'HS256', expiresIn: '5m', issuer: 'koro', audience: 'koro-client' },
+  );
+}
+
+function verifyLoginChallenge(token) {
+  try {
+    const payload = jwt.verify(token, config.jwt.secret, {
+      algorithms: ['HS256'], issuer: 'koro', audience: 'koro-client',
+    });
+    if (payload.typ !== 'login_challenge') return null;
+    return { uid: payload.sub, phone: payload.phone };
+  } catch { return null; }
+}
+
+module.exports = { signAccess, verifyAccess, signLoginChallenge, verifyLoginChallenge };

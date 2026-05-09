@@ -172,7 +172,43 @@ function publicUrl(req, mediaId) {
   return `${proto}://${host}/media/${mediaId}`;
 }
 
-module.exports = { upload, postRecipients, getMyKey, publicUrl };
+/**
+ * GET /conversations/:id/media
+ *
+ * Per-chat media gallery: returns all media_objects scoped to the
+ * conversation that the caller can decrypt (i.e. they have a key
+ * recipient row for it). Filtered by mime-prefix when `?type=image|video`
+ * is passed.
+ */
+async function listForConversation(req, res, { params, query }) {
+  const convId = params.id;
+  // Authorization: caller must be a member.
+  const { data: m } = await supabase.from('conversation_members')
+    .select('user_id').eq('conversation_id', convId).eq('user_id', req.auth.userId)
+    .is('left_at', null).maybeSingle();
+  if (!m) return forbidden(res, 'Not a member');
+
+  let q = supabase.from('media_objects')
+    .select('id, mime_type, size_bytes, created_at, uploader_user_id, sha256')
+    .eq('conversation_id', convId)
+    .order('created_at', { ascending: false }).limit(200);
+
+  const type = String(query?.type || '').toLowerCase();
+  if (type === 'image') q = q.like('mime_type', 'image/%');
+  else if (type === 'video') q = q.like('mime_type', 'video/%');
+
+  const { data } = await q;
+  ok(res, { media: (data || []).map((row) => ({
+    id: row.id,
+    url: publicUrl(req, row.id),
+    mime_type: row.mime_type,
+    size_bytes: row.size_bytes,
+    created_at: row.created_at,
+    uploader_user_id: row.uploader_user_id,
+  })) });
+}
+
+module.exports = { upload, postRecipients, getMyKey, publicUrl, listForConversation };
 
 // Exported for download.js
 module.exports.resolveKey = resolveKey;

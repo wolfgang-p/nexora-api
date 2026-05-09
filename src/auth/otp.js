@@ -198,6 +198,25 @@ async function verifyOtp(req, res) {
   }).select('*').single();
   if (devErr) return serverError(res, 'Could not register device', devErr);
 
+  // 2FA gate — if this user has TOTP enabled, don't issue a session.
+  // Instead, return a short-lived login_token; the client must POST to
+  // /auth/totp/verify with a valid code to get the actual tokens.
+  if (user.totp_enabled) {
+    const { signLoginChallenge } = require('./jwt');
+    const loginToken = signLoginChallenge({ userId: user.id, phone });
+    audit({
+      userId: user.id, deviceId: device.id,
+      action: 'auth.verify_otp.totp_required', targetType: 'device', targetId: device.id, req,
+    });
+    return ok(res, {
+      pending_totp: true,
+      login_token: loginToken,
+      device: sanitizeDevice(device),
+      // Echo user info so the client can show "Hi, name" on the 2FA screen.
+      user: sanitizeUser(user),
+    });
+  }
+
   // Issue tokens
   const accessToken = signAccess({ userId: user.id, deviceId: device.id });
   const refreshToken = randomBase64Url(48);
@@ -210,6 +229,10 @@ async function verifyOtp(req, res) {
     refresh_token_hash: refreshHash,
     expires_at: refreshExpires,
   });
+
+  // Login-history row (best-effort, non-blocking).
+  const { recordLogin } = require('./loginHistory');
+  recordLogin({ userId: user.id, deviceId: device.id, mode: 'otp', req }).catch(() => {});
 
   audit({
     userId: user.id, deviceId: device.id,

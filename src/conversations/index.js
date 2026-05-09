@@ -114,6 +114,42 @@ async function createConversation(req, res) {
     return badRequest(res, 'Direct conversation needs exactly 2 members');
   }
 
+  // Contact-only-messaging gate. If the OTHER party has the privacy
+  // toggle on AND there's no existing direct conversation between us
+  // AND we don't have their phone-hash on file, reject. Existing
+  // conversations + workspace coworkers are always allowed.
+  if (kind === 'direct') {
+    const otherId = members.find((uid) => uid !== req.auth.userId);
+    if (otherId) {
+      const { data: theirSettings } = await supabase.from('user_settings')
+        .select('contact_only_messaging').eq('user_id', otherId).maybeSingle();
+      if (theirSettings?.contact_only_messaging) {
+        // Was there ever a direct conversation between us?
+        const { data: priorMine } = await supabase.from('conversation_members')
+          .select('conversation_id, conversation:conversations!inner(kind)')
+          .eq('user_id', req.auth.userId);
+        const myConvIds = (priorMine || [])
+          .filter((m) => m.conversation?.kind === 'direct')
+          .map((m) => m.conversation_id);
+        let hasPrior = false;
+        if (myConvIds.length) {
+          const { data: priorTheirs } = await supabase.from('conversation_members')
+            .select('conversation_id')
+            .eq('user_id', otherId)
+            .in('conversation_id', myConvIds);
+          hasPrior = (priorTheirs || []).length > 0;
+        }
+        if (!hasPrior) {
+          // We could also accept the call when the user has the other
+          // person in their address book (phone_hash overlap), but that
+          // requires the client passing the hash list — kept simple for
+          // v1: no prior chat → blocked.
+          return forbidden(res, 'Contact only — kein bestehender Chat');
+        }
+      }
+    }
+  }
+
   const { data: conv, error } = await supabase.from('conversations').insert({
     kind,
     workspace_id: body.workspace_id || null,

@@ -18,6 +18,8 @@ const FIELDS = [
   'read_receipts_enabled', 'typing_indicators_enabled',
   'auto_translate_enabled', 'auto_translate_target', 'auto_translate_show_original',
   'show_last_seen',
+  // 0023 — privacy + screenshot block.
+  'contact_only_messaging', 'screenshot_blocked',
 ];
 
 async function get(req, res) {

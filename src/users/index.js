@@ -158,4 +158,24 @@ async function listBlocked(req, res) {
   ok(res, { blocks });
 }
 
-module.exports = { me, updateMe, search, getUser, discover, block, unblock, listBlocked };
+/**
+ * GET /users/by-username/:username
+ *
+ * Resolve a username (case-insensitive) to a public-profile shape.
+ * Used by the koro://user/USERNAME deeplink + QR-invite flow.
+ * Available to authed users only — we don't want a public scrape
+ * surface beyond what /bio/public/:username already exposes.
+ */
+async function byUsername(req, res, { params }) {
+  const username = String(params.username || '').toLowerCase();
+  if (!username) return badRequest(res, 'username required');
+
+  const { data: user } = await supabase
+    .from('users')
+    .select('id, username, display_name, avatar_url, account_type')
+    .ilike('username', username).is('deleted_at', null).maybeSingle();
+  if (!user) return notFound(res);
+  ok(res, { user });
+}
+
+module.exports = { me, updateMe, search, getUser, byUsername, discover, block, unblock, listBlocked };

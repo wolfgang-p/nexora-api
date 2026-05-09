@@ -61,14 +61,35 @@ async function pushToDevices(deviceIds, opts = {}) {
         // Intentionally no title/body/sound.
       });
     } else {
+      // iOS thread-identifier: groups notifications in the lock screen.
+      // For messages, use conversation_id so the same chat collapses
+      // into a single banner stack. For reminders, use the reminder_id
+      // so re-fired snoozed reminders replace each other instead of
+      // piling up. Calls don't benefit (one per call), so leave undefined.
+      const threadId =
+          category === 'message'  ? (data.conversation_id ? `chat:${data.conversation_id}` : undefined)
+        : category === 'reminder' ? (data.reminder_id ? `reminder:${data.reminder_id}` : 'reminder')
+        : undefined;
+      // Per-category sound. We bundle ringtone.caf today; messages.caf
+      // and reminder.caf can be added later — falls back to 'default'
+      // when missing on the device. The Expo SDK passes this through
+      // unchanged to APNs/FCM.
+      const sound =
+          category === 'call'      ? 'ringtone.caf'
+        : category === 'reminder'  ? 'reminder.caf'
+        : 'default';
       messages.push({
         ...base,
         title,
         body,
-        sound: category === 'call' ? 'ringtone.caf' : 'default',
-        // iOS: actionable category (Accept / Decline buttons) for calls.
-        // The client registers this category name on startup.
-        categoryId: category === 'call' ? 'KORO_CALL' : undefined,
+        sound,
+        // iOS: actionable category (Accept / Decline buttons) for calls,
+        // (Snooze / Done) for reminders.
+        categoryId:
+            category === 'call'     ? 'KORO_CALL'
+          : category === 'reminder' ? 'KORO_REMINDER'
+          : opts.categoryId,
+        ...(threadId ? { threadId } : {}),
       });
     }
   }
@@ -199,4 +220,31 @@ async function pushVoipCall(deviceIds, payload) {
   }
 }
 
-module.exports = { pushToDevices, pushIncomingCall };
+/**
+ * Fire a security-alert banner to every device of a user EXCEPT the
+ * one that just signed in. Used when login_history flags a new login
+ * as suspicious (different country than last 30-day norm).
+ */
+async function pushSecurityAlert({ userId, excludeDeviceId, country }) {
+  try {
+    const { supabase } = require('../db/supabase');
+    const { data: devices } = await supabase.from('devices')
+      .select('id').eq('user_id', userId).is('revoked_at', null);
+    const targets = (devices || [])
+      .map((d) => d.id)
+      .filter((id) => id !== excludeDeviceId);
+    if (!targets.length) return;
+    await pushToDevices(targets, {
+      title: 'Neue Anmeldung erkannt',
+      body: country
+        ? `Auf einem unbekannten Gerät aus ${country}. Wenn das nicht du warst, prüfe deine Geräte.`
+        : 'Auf einem unbekannten Gerät. Wenn das nicht du warst, prüfe deine Geräte.',
+      data: { type: 'security.suspicious_login', country: country || null },
+      categoryId: 'security',
+    });
+  } catch (err) {
+    console.error('[pushSecurityAlert]', err?.message || err);
+  }
+}
+
+module.exports = { pushToDevices, pushIncomingCall, pushSecurityAlert };

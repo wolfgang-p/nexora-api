@@ -55,6 +55,24 @@ async function route(ws, data) {
         payload: data.payload,
       });
 
+    // In-call emoji burst — fan out to all OTHER participants of the
+    // call. We use the call's conversation as the broadcast group;
+    // it's the same authorization model as typing/messages.
+    case 'call.reaction': {
+      if (!data.call_id || typeof data.emoji !== 'string') {
+        return send(ws, { type: 'error', error: 'call_id + emoji required' });
+      }
+      const { data: call } = await supabase.from('calls')
+        .select('conversation_id').eq('id', data.call_id).maybeSingle();
+      if (!call?.conversation_id) return;
+      return forwardToConversation(call.conversation_id, userId, deviceId, {
+        type: 'call.reaction',
+        call_id: data.call_id,
+        emoji: String(data.emoji).slice(0, 8),
+        from_user_id: userId,
+      });
+    }
+
     case 'presence.update':
       // Coarse presence: tell people sharing a conversation with me
       return updatePresence(userId, data.state || 'online');

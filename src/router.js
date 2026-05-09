@@ -53,6 +53,9 @@ const drafts = require('./conversations/drafts');
 const og = require('./util/og');
 const userSettings = require('./users/settings');
 const bio = require('./bio');
+const totp = require('./auth/totp');
+const loginHistory = require('./auth/loginHistory');
+const recovery = require('./auth/recovery');
 
 /**
  * Tiny route matcher. Routes are tuples: [method, pattern, handler, { auth }]
@@ -95,6 +98,7 @@ r('GET', '/pairing/sessions/:id/token', pairingToken.getPairingToken, { auth: fa
 r('GET', '/users/me', users.me);
 r('PUT', '/users/me', users.updateMe);
 r('GET', '/users/search', users.search);
+r('GET', '/users/by-username/:username', users.byUsername);
 r('GET', '/users/blocked', users.listBlocked);
 r('POST', '/users/discover', users.discover);
 r('GET', '/users/:id', users.getUser);
@@ -135,10 +139,12 @@ r('POST',   '/messages/scheduled',     messagesScheduled.create);
 r('DELETE', '/messages/scheduled/:id', messagesScheduled.destroy);
 
 // --- Reminders ---
-r('GET',    '/reminders',     reminders.list);
-r('POST',   '/reminders',     reminders.create);
-r('PUT',    '/reminders/:id', reminders.update);
-r('DELETE', '/reminders/:id', reminders.destroy);
+r('GET',    '/reminders',          reminders.list);
+r('POST',   '/reminders',          reminders.create);
+r('PUT',    '/reminders/:id',      reminders.update);
+r('DELETE', '/reminders/:id',      reminders.destroy);
+r('POST',   '/reminders/:id/snooze',   reminders.snooze);
+r('POST',   '/reminders/:id/complete', reminders.complete);
 
 // --- Reactions ---
 r('GET', '/messages/:id/reactions', reactions.list);
@@ -164,6 +170,7 @@ r('GET', '/util/og', og.fetchOg);
 
 // --- Media (local disk) ---
 r('POST', '/media/upload', media.upload);
+r('GET', '/conversations/:id/media', media.listForConversation);
 // Avatars live in /media/:id with conversation_id=NULL and need to be
 // accessible from <img src> tags (no Authorization header possible). The
 // handler itself enforces auth when the object belongs to a conversation.
@@ -273,6 +280,22 @@ r('DELETE', '/conversations/:id/public',  publicChannels.unpublish);
 r('GET',    '/public/channels/:slug',     publicChannels.viewPublic, { auth: false });
 r('GET',    '/public/channels',            publicChannels.listPublic, { auth: false });
 r('POST',   '/public/channels/:slug/join', publicChannels.joinPublic);
+
+// --- 2FA TOTP ---
+r('POST',   '/auth/totp/setup',                 totp.setup);
+r('POST',   '/auth/totp/enable',                totp.enable);
+r('POST',   '/auth/totp/disable',               totp.disable);
+r('POST',   '/auth/totp/verify',                totp.verifyChallenge,        { auth: false });
+r('GET',    '/auth/totp/backup-codes',          totp.listBackupCodes);
+r('POST',   '/auth/totp/backup-codes/regenerate', totp.regenerateBackupCodes);
+
+// --- Login history ---
+r('GET',    '/me/login-history',                loginHistory.listMine);
+
+// --- Recovery code (new-device escape hatch) ---
+r('POST',   '/auth/recovery/register',          recovery.registerCode);
+r('DELETE', '/auth/recovery/register',          recovery.clearCode);
+r('POST',   '/auth/recovery/verify',            recovery.verifyAndLogin,     { auth: false });
 
 // --- koro.bio (LinkTree) ---
 r('GET',    '/bio/me',                       bio.getMine);

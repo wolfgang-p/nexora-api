@@ -109,4 +109,41 @@ async function destroy(req, res, { params }) {
   ok(res, { ok: true });
 }
 
-module.exports = { list, create, update, destroy };
+/**
+ * POST /reminders/:id/snooze  { minutes?: number }
+ *
+ * Defaults to 15 minutes. Used by the iOS notification action button
+ * so the user can deflect a reminder without opening the app.
+ */
+async function snooze(req, res, { params }) {
+  const body = await readJson(req).catch(() => ({})) || {};
+  const minutes = Math.max(1, Math.min(24 * 60, Number(body.minutes) || 15));
+  const next = new Date(Date.now() + minutes * 60 * 1000);
+
+  const { data, error } = await supabase.from('reminders').update({
+    snoozed_until: next.toISOString(),
+    remind_at: next.toISOString(),
+    fired_at: null,
+  }).eq('id', params.id).eq('user_id', req.auth.userId).select('*').maybeSingle();
+  if (error) return serverError(res, 'Snooze failed', error);
+  if (!data) return notFound(res, 'Reminder not found');
+  ok(res, { reminder: data });
+}
+
+/**
+ * POST /reminders/:id/complete
+ *
+ * Marks the reminder as dismissed AND completed. Distinct from
+ * snooze: complete = "I did the thing".
+ */
+async function complete(req, res, { params }) {
+  const now = new Date().toISOString();
+  const { data, error } = await supabase.from('reminders').update({
+    dismissed_at: now,
+  }).eq('id', params.id).eq('user_id', req.auth.userId).select('*').maybeSingle();
+  if (error) return serverError(res, 'Complete failed', error);
+  if (!data) return notFound(res, 'Reminder not found');
+  ok(res, { reminder: data });
+}
+
+module.exports = { list, create, update, destroy, snooze, complete };
