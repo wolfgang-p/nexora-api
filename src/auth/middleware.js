@@ -73,4 +73,33 @@ async function requireAdmin(req, res) {
   return true;
 }
 
-module.exports = { authenticate, requireAdmin };
+/**
+ * Optional auth — populates req.auth if a valid Bearer token is
+ * present, otherwise leaves req.auth = null and lets the request
+ * through. Used by koro-meet endpoints that accept both Koro users
+ * and anonymous guests.
+ */
+async function optionalAuthenticate(req) {
+  const header = req.headers['authorization'] || '';
+  const m = header.match(/^Bearer\s+(.+)$/i);
+  if (!m) { req.auth = null; return; }
+  try {
+    const claims = verifyAccess(m[1]);
+    const { data: device } = await supabase.from('devices')
+      .select('id, user_id, kind, revoked_at, users:user_id (id, is_admin, banned_at, deleted_at)')
+      .eq('id', claims.deviceId).maybeSingle();
+    if (!device || device.revoked_at || device.user_id !== claims.userId) {
+      req.auth = null; return;
+    }
+    const user = Array.isArray(device.users) ? device.users[0] : device.users;
+    if (!user || user.deleted_at || user.banned_at) { req.auth = null; return; }
+    req.auth = {
+      userId: claims.userId,
+      deviceId: claims.deviceId,
+      device: { id: device.id, user_id: device.user_id, kind: device.kind, revoked_at: device.revoked_at },
+      user: { id: user.id, is_admin: !!user.is_admin, banned_at: user.banned_at },
+    };
+  } catch { req.auth = null; }
+}
+
+module.exports = { authenticate, requireAdmin, optionalAuthenticate };

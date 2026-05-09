@@ -56,6 +56,7 @@ const bio = require('./bio');
 const totp = require('./auth/totp');
 const loginHistory = require('./auth/loginHistory');
 const recovery = require('./auth/recovery');
+const meetings = require('./meetings');
 
 /**
  * Tiny route matcher. Routes are tuples: [method, pattern, handler, { auth }]
@@ -73,6 +74,9 @@ function r(method, pattern, handler, opts = {}) {
     method, regex, keys, handler,
     auth: opts.auth !== false,
     admin: opts.admin === true,
+    // `optionalAuth: true` means: parse Bearer token if present, but
+    // don't reject anonymous callers. Used by koro-meet endpoints.
+    optionalAuth: opts.optionalAuth === true,
   });
 }
 
@@ -297,6 +301,17 @@ r('POST',   '/auth/recovery/register',          recovery.registerCode);
 r('DELETE', '/auth/recovery/register',          recovery.clearCode);
 r('POST',   '/auth/recovery/verify',            recovery.verifyAndLogin,     { auth: false });
 
+// --- koro-meet (multi-participant meetings) ---
+r('POST',   '/meetings',                        meetings.create,        { auth: false, optionalAuth: true });
+r('GET',    '/meetings',                        meetings.listMine);
+r('GET',    '/meetings/:roomId',                meetings.getOne,        { auth: false });
+r('POST',   '/meetings/:roomId/join',           meetings.join,          { auth: false, optionalAuth: true });
+r('POST',   '/meetings/:roomId/leave',          meetings.leave,         { auth: false });
+r('PATCH',  '/meetings/:roomId',                meetings.update);
+r('DELETE', '/meetings/:roomId',                meetings.destroy);
+r('GET',    '/meetings/:roomId/messages',       meetings.listMessages,  { auth: false });
+r('POST',   '/meetings/:roomId/messages',       meetings.postMessage,   { auth: false, optionalAuth: true });
+
 // --- koro.bio (LinkTree) ---
 r('GET',    '/bio/me',                       bio.getMine);
 r('PUT',    '/bio/me',                       bio.updateMine);
@@ -461,6 +476,8 @@ async function handleRequest(req, res) {
       if (route.auth) {
         const authed = await authenticate(req, res);
         if (!authed) return;
+      } else if (route.optionalAuth) {
+        await optionalAuthenticate(req);
       }
       if (route.admin) {
         const ok = await requireAdmin(req, res);

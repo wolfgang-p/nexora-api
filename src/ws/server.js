@@ -62,6 +62,37 @@ function attachWsServer(httpServer) {
         return;
       }
 
+      // koro-meet guest authentication. Anonymous browsers reach the WS
+      // through this path — we don't mint a Koro session for them, just
+      // tag the socket with a guest "meet:<uuid>" handle that lives only
+      // for the WS lifetime. Signaling routes recognise the prefix and
+      // restrict guest traffic to meeting.* events.
+      if (data.type === 'meet.auth') {
+        const meetingId = String(data.meeting_id || '').trim();
+        const guestDeviceId = String(data.device_id || '').trim();
+        if (!meetingId || !guestDeviceId) {
+          send(ws, { type: 'error', error: 'meet.auth requires meeting_id + device_id' });
+          ws.close(4002, 'meet_auth_missing');
+          return;
+        }
+        // Verify the meeting exists + isn't ended. Doesn't gate on
+        // participation here — the join endpoint is the source of
+        // truth for that. WS just relays.
+        const { data: meeting } = await supabase.from('meetings')
+          .select('id, ended_at').eq('room_id', meetingId).maybeSingle();
+        if (!meeting || meeting.ended_at) {
+          send(ws, { type: 'error', error: 'meeting_not_found' });
+          ws.close(4002, 'meeting_not_found');
+          return;
+        }
+        const handle = `meet:${guestDeviceId}`;
+        ws.auth = { kind: 'meet-guest', deviceId: handle, meetingId, userId: null };
+        register(handle, ws);
+        clearTimeout(authTimer);
+        send(ws, { type: 'meet.auth.ok', device_id: handle, meeting_id: meetingId });
+        return;
+      }
+
       if (!ws.auth) {
         return send(ws, { type: 'error', error: 'not_authenticated' });
       }

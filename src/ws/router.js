@@ -77,8 +77,61 @@ async function route(ws, data) {
       // Coarse presence: tell people sharing a conversation with me
       return updatePresence(userId, data.state || 'online');
 
+    // ── koro-meet signaling ────────────────────────────────────────────
+    //
+    // Three classes of message:
+    //   meet.signal   — point-to-point WebRTC signaling (offer/answer/ice/
+    //                   media-state). Routed by `target_device_id`.
+    //   meet.broadcast — fan out to every other live participant of the
+    //                    meeting. Used for chat, raise-hand, presence.
+    //   meet.bye       — explicit leave; lets peers tear down faster than
+    //                    waiting on the heartbeat.
+    case 'meet.signal': {
+      if (!data.target_device_id) return send(ws, { type: 'error', error: 'target_device_id required' });
+      return sendTo(data.target_device_id, {
+        type: 'meet.signal',
+        meeting_id: data.meeting_id,
+        signal: data.signal,             // 'offer'|'answer'|'ice'|'media-state'
+        from_device_id: deviceId,
+        from_user_id: userId,
+        payload: data.payload,
+      });
+    }
+    case 'meet.broadcast':
+    case 'meet.bye': {
+      if (!data.meeting_id) return send(ws, { type: 'error', error: 'meeting_id required' });
+      return forwardToMeeting(data.meeting_id, deviceId, {
+        type: data.type,
+        meeting_id: data.meeting_id,
+        from_device_id: deviceId,
+        from_user_id: userId,
+        // Subtype lets the client switch on chat/raise-hand/presence/etc.
+        subtype: data.subtype || null,
+        payload: data.payload,
+      });
+    }
+
     default:
       return send(ws, { type: 'error', error: `unknown_type: ${data.type}` });
+  }
+}
+
+/**
+ * Fan out a payload to every active (left_at IS NULL) participant of
+ * a meeting EXCEPT the sender. Looks up the device handles in
+ * `meeting_participants.device_id` (which is the same key our WS
+ * registry uses — Koro device UUIDs for users, "meet:<uuid>" handles
+ * for guests).
+ */
+async function forwardToMeeting(roomId, senderDeviceId, payload) {
+  const { data: meeting } = await supabase.from('meetings')
+    .select('id').eq('room_id', roomId).maybeSingle();
+  if (!meeting) return;
+  const { data: participants } = await supabase.from('meeting_participants')
+    .select('device_id').eq('meeting_id', meeting.id).is('left_at', null);
+  for (const p of participants || []) {
+    if (p.device_id === senderDeviceId) continue;
+    sendTo(p.device_id, payload);
   }
 }
 
