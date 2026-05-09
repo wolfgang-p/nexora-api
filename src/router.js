@@ -2,7 +2,7 @@
 
 const config = require('./config');
 const { notFound, ok, serverError } = require('./util/response');
-const { authenticate, requireAdmin } = require('./auth/middleware');
+const { authenticate, requireAdmin, optionalAuthenticate } = require('./auth/middleware');
 const { counter, httpResponse, observe } = require('./util/metrics');
 const logger = require('./util/logger');
 
