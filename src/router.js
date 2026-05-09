@@ -415,21 +415,35 @@ function parseQuery(url) {
   return { path, query: q };
 }
 
+// First-party koro web origins that we ALWAYS allow regardless of
+// CORS_ORIGINS env. Lets us roll out new sub-apps (meet, bio, future
+// dashboards) without an ops change for every new hostname.
+const FIRST_PARTY_HOST_RE = /^https?:\/\/(?:[a-z0-9-]+\.)?koro\.(?:chat|bio)(?::\d+)?$/i;
+// Localhost variants for `npm run dev` on each web app.
+const LOCAL_HOST_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i;
+
 function corsHeaders(req) {
   const origin = req.headers.origin;
-  const allowed = config.corsOrigins.length === 0 || config.corsOrigins.includes(origin);
+  const isFirstParty = origin && FIRST_PARTY_HOST_RE.test(origin);
+  const isLocal = origin && LOCAL_HOST_RE.test(origin);
+  const isExplicitlyAllowed = origin && config.corsOrigins.includes(origin);
+  const wildcardMode = config.corsOrigins.length === 0 || config.corsOrigins.includes('*');
+  const allowed = isFirstParty || isLocal || isExplicitlyAllowed || wildcardMode;
+
   const headers = {
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Koro-Signature',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+    // `x-koro-meet-device` carries the per-tab guest UUID for koro-meet
+    // endpoints that accept anonymous callers; reflect it in preflight.
+    'Access-Control-Allow-Headers':
+      'Authorization, Content-Type, X-Koro-Signature, X-Koro-Meet-Device',
     'Access-Control-Max-Age': '86400',
     'Vary': 'Origin',
   };
-  // Allow origin if configured OR if wildcard mode
   if (allowed) {
     if (origin) {
       headers['Access-Control-Allow-Origin'] = origin;
-    } else if (config.corsOrigins.length === 0 || config.corsOrigins.includes('*')) {
-      // Wildcard mode: allow all (React Native fetch doesn't send Origin header)
+    } else if (wildcardMode) {
+      // React Native fetch / mobile clients don't send Origin.
       headers['Access-Control-Allow-Origin'] = '*';
     }
   }
