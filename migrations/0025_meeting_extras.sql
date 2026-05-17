@@ -13,3 +13,10 @@ ALTER TABLE meetings
 
 ALTER TABLE meetings
   ADD COLUMN IF NOT EXISTS pdf JSONB DEFAULT NULL;
+
+-- Guest-hosted meetings need to upload a PDF without owning a koro
+-- account. Relax the uploader FK so a NULL uploader_user_id is allowed —
+-- ownership for these rows is implicit (the meeting host who uploaded
+-- it). All existing rows stay populated; this only opens up new inserts.
+ALTER TABLE media_objects
+  ALTER COLUMN uploader_user_id DROP NOT NULL;

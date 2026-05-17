@@ -311,10 +311,11 @@ r('PATCH',  '/meetings/:roomId',                meetings.update);
 r('DELETE', '/meetings/:roomId',                meetings.destroy);
 r('GET',    '/meetings/:roomId/messages',       meetings.listMessages,  { auth: false });
 r('POST',   '/meetings/:roomId/messages',       meetings.postMessage,   { auth: false, optionalAuth: true });
-r('POST',   '/meetings/:roomId/start',          meetings.startNow);
-r('POST',   '/meetings/:roomId/participants/:participantId/kick', meetings.kickParticipant);
-r('PATCH',  '/meetings/:roomId/pdf',            meetings.setPdf);
-r('DELETE', '/meetings/:roomId/pdf',            meetings.clearPdf);
+r('POST',   '/meetings/:roomId/start',          meetings.startNow,      { auth: false, optionalAuth: true });
+r('POST',   '/meetings/:roomId/participants/:participantId/kick', meetings.kickParticipant, { auth: false, optionalAuth: true });
+r('PATCH',  '/meetings/:roomId/pdf',            meetings.setPdf,        { auth: false, optionalAuth: true });
+r('DELETE', '/meetings/:roomId/pdf',            meetings.clearPdf,      { auth: false, optionalAuth: true });
+r('POST',   '/meetings/:roomId/pdf-upload',     meetings.uploadPdf,     { auth: false, optionalAuth: true });
 
 // --- koro.bio (LinkTree) ---
 r('GET',    '/bio/me',                       bio.getMine);

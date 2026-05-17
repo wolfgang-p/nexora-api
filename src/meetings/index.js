@@ -26,9 +26,18 @@
  */
 
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const fsp = require('node:fs/promises');
+const { pipeline } = require('node:stream/promises');
 const { supabase } = require('../db/supabase');
 const { readJson, ok, created, badRequest, forbidden, notFound, serverError } = require('../util/response');
 const { audit } = require('../util/audit');
+const { plan, ensureDir } = require('../media/fs');
+
+// Max PDF size that a meeting host can pin. 25 MB is enough for a
+// typical slide deck but small enough to keep the streaming write
+// from blowing up RAM.
+const PDF_MAX_BYTES = 25 * 1024 * 1024;
 
 // 10-char base32-friendly slug — ~10^15 space, collisions ignorable.
 const ROOM_ALPHA = 'abcdefghijkmnopqrstuvwxyz23456789';
@@ -406,14 +415,48 @@ async function postMessage(req, res, { params }) {
 
 // ── Host actions ──────────────────────────────────────────────────────
 
-/** Common: load the meeting + assert the caller is its host. */
+/**
+ * Common: load the meeting + assert the caller is its host.
+ *
+ * Two valid host-paths:
+ *   1. Koro user whose user_id matches meetings.host_user_id.
+ *   2. Guest host: meetings.host_user_id IS NULL and the request's
+ *      device handle (x-koro-meet-device header, normalised the same
+ *      way join() does) matches an active meeting_participants row
+ *      with is_host=true. This lets guest-created meetings still have
+ *      kick / PDF / start-now host actions without forcing a login.
+ */
 async function assertHost(req, res, roomId) {
-  if (!req.auth?.userId) { forbidden(res, 'Auth required'); return null; }
   const { data: meeting } = await supabase.from('meetings')
     .select('*').eq('room_id', roomId).maybeSingle();
   if (!meeting) { notFound(res); return null; }
-  if (meeting.host_user_id !== req.auth.userId) { forbidden(res, 'Host only'); return null; }
-  return meeting;
+
+  // Koro user host path.
+  if (req.auth?.userId && meeting.host_user_id === req.auth.userId) {
+    return meeting;
+  }
+
+  // Guest host path — only when no Koro host is on file.
+  if (!meeting.host_user_id) {
+    const rawDeviceId = req.headers['x-koro-meet-device'];
+    if (rawDeviceId) {
+      const cleaned = String(rawDeviceId).slice(0, 64);
+      const candidates = cleaned.startsWith('meet:')
+        ? [cleaned, cleaned.slice(5)]
+        : [cleaned, `meet:${cleaned}`];
+      const { data: hostRow } = await supabase.from('meeting_participants')
+        .select('id, is_host, device_id')
+        .eq('meeting_id', meeting.id)
+        .is('left_at', null)
+        .in('device_id', candidates)
+        .eq('is_host', true)
+        .maybeSingle();
+      if (hostRow) return meeting;
+    }
+  }
+
+  forbidden(res, 'Host only');
+  return null;
 }
 
 /**
@@ -596,8 +639,105 @@ async function clearPdf(req, res, { params }) {
   ok(res, { meeting: updated });
 }
 
+/**
+ * POST /meetings/:roomId/pdf-upload
+ * Host-only PDF upload that works for both koro hosts AND guest hosts.
+ * Reuses the standard media storage pipeline but accepts a NULL
+ * uploader_user_id when the caller is a guest. Returns the resulting
+ * meeting record so the client can patch its UI in one round trip.
+ */
+async function uploadPdf(req, res, { params }) {
+  const meeting = await assertHost(req, res, params.roomId);
+  if (!meeting) return;
+
+  const mime = (req.headers['content-type'] || '').split(';')[0].trim();
+  const size = Number(req.headers['content-length'] || 0);
+  const fileName = (req.headers['x-file-name'] || 'document.pdf').toString().slice(0, 200);
+
+  if (!/pdf/i.test(mime)) return badRequest(res, 'Nur PDFs werden unterstützt.');
+  if (!size || size <= 0) return badRequest(res, 'Content-Length required');
+  if (size > PDF_MAX_BYTES) {
+    return badRequest(res, `PDF ist zu groß (max ${Math.round(PDF_MAX_BYTES / 1024 / 1024)} MB).`);
+  }
+
+  const p = plan(mime, fileName);
+  await ensureDir(p.dir);
+
+  const hash = crypto.createHash('sha256');
+  let written = 0;
+  const writeStream = fs.createWriteStream(p.absPath);
+  req.on('data', (chunk) => hash.update(chunk));
+  try {
+    await pipeline(
+      async function* (source) {
+        for await (const chunk of source) {
+          written += chunk.length;
+          if (written > PDF_MAX_BYTES) {
+            throw Object.assign(new Error('Body exceeds size limit'), { statusCode: 413 });
+          }
+          yield chunk;
+        }
+      }(req),
+      writeStream,
+    );
+  } catch (err) {
+    await fsp.unlink(p.absPath).catch(() => {});
+    return serverError(res, 'Upload failed', err);
+  }
+  const sha256 = hash.digest('hex');
+
+  const { data: media, error: insErr } = await supabase.from('media_objects').insert({
+    uploader_user_id: req.auth?.userId || null,
+    uploader_device_id: req.auth?.deviceId || req.headers['x-koro-meet-device'] || null,
+    conversation_id: null,
+    storage_key: p.storageKey,
+    mime_type: mime,
+    size_bytes: written,
+    sha256,
+  }).select('*').single();
+  if (insErr) {
+    await fsp.unlink(p.absPath).catch(() => {});
+    return serverError(res, 'Could not register media', insErr);
+  }
+
+  // Pin to the meeting + fan out so live clients open the panel.
+  const proto = req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http');
+  const host  = req.headers['x-forwarded-host'] || req.headers.host;
+  const url = `${proto}://${host}/media/${media.id}`;
+
+  const pdf = {
+    media_id: media.id,
+    url,
+    name: fileName,
+    size_bytes: written,
+    uploaded_at: new Date().toISOString(),
+    uploaded_by: req.auth?.userId || null,
+  };
+
+  const { data: updated, error: updErr } = await supabase.from('meetings').update({
+    pdf, updated_at: new Date().toISOString(),
+  }).eq('id', meeting.id).select('*').single();
+  if (updErr) return serverError(res, 'PDF pin failed', updErr);
+
+  try {
+    const { sendTo } = require('../ws/dispatch');
+    const { data: peers } = await supabase.from('meeting_participants')
+      .select('device_id').eq('meeting_id', meeting.id).is('left_at', null);
+    for (const p2 of peers || []) {
+      sendTo(p2.device_id, {
+        type: 'meet.broadcast',
+        meeting_id: params.roomId,
+        subtype: 'pdf',
+        payload: { pdf },
+      });
+    }
+  } catch (err) { console.warn('[meet.pdf.upload]', err); }
+
+  ok(res, { meeting: updated, pdf });
+}
+
 module.exports = {
   create, listMine, getOne, join, leave, update, destroy,
   listMessages, postMessage,
-  startNow, kickParticipant, setPdf, clearPdf,
+  startNow, kickParticipant, setPdf, clearPdf, uploadPdf,
 };
