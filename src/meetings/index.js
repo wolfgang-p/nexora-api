@@ -41,14 +41,28 @@ function newRoomId() {
 
 // Pull either the authed user OR a guest identifier from the request.
 // `device_id` and `display_name` are required for both.
+//
+// Guest device IDs are stored with a `meet:` prefix so they match the
+// handle the WebSocket server registers their socket under (see
+// ws/server.js `meet.auth`). Without the prefix, forwardToMeeting and
+// meet.signal route by the bare uuid and silently miss every guest —
+// no offers, no answers, no chat, no broadcasts.
 function actorFor(req, body) {
   const auth = req.auth || null;
   const deviceHeader = req.headers['x-koro-meet-device'];
-  const deviceId = body?.device_id || deviceHeader || (auth?.deviceId);
+  const rawDeviceId = body?.device_id || deviceHeader || (auth?.deviceId);
+  const cleaned = rawDeviceId ? String(rawDeviceId).slice(0, 64) : null;
+  // Authenticated users keep their bare Koro device UUID — that's what
+  // their WS connection is registered under. Guests get the `meet:`
+  // prefix unless the client already supplied one (idempotent).
+  let deviceId = cleaned;
+  if (cleaned && !auth?.userId && !cleaned.startsWith('meet:')) {
+    deviceId = `meet:${cleaned}`;
+  }
   const displayName = (body?.display_name || '').trim();
   return {
     userId: auth?.userId || null,
-    deviceId: deviceId ? String(deviceId).slice(0, 64) : null,
+    deviceId,
     displayName: displayName.slice(0, 64) || null,
     guestName: !auth?.userId && displayName ? displayName.slice(0, 64) : null,
   };
@@ -203,7 +217,8 @@ async function join(req, res, { params }) {
 
 async function leave(req, res, { params }) {
   const body = await readJson(req).catch(() => null) || {};
-  const deviceId = body.device_id || req.headers['x-koro-meet-device'];
+  const actor = actorFor(req, body);
+  const deviceId = actor.deviceId;
   if (!deviceId) return badRequest(res, 'device_id required');
 
   const { data: meeting } = await supabase.from('meetings')
@@ -213,6 +228,25 @@ async function leave(req, res, { params }) {
   await supabase.from('meeting_participants').update({
     left_at: new Date().toISOString(),
   }).eq('meeting_id', meeting.id).eq('device_id', deviceId).is('left_at', null);
+
+  // Tell remaining participants the roster changed so they refresh + drop
+  // the leaver's tile immediately, without waiting for WS heartbeat or
+  // RTC connectionState=closed (which can take 10+ s).
+  try {
+    const { sendTo } = require('../ws/dispatch');
+    const { data: peers } = await supabase.from('meeting_participants')
+      .select('device_id').eq('meeting_id', meeting.id).is('left_at', null);
+    for (const p of peers || []) {
+      if (p.device_id === deviceId) continue;
+      sendTo(p.device_id, {
+        type: 'meet.broadcast',
+        meeting_id: params.roomId,
+        subtype: 'roster.changed',
+        from_device_id: deviceId,
+        payload: null,
+      });
+    }
+  } catch (err) { console.warn('[meet.leave]', err); }
 
   // If everyone left, mark the meeting ended (allows the dashboard to
   // surface duration). Schedule-clean meetings stay around until the
