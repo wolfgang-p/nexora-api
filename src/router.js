@@ -420,10 +420,13 @@ function parseQuery(url) {
   return { path, query: q };
 }
 
-// First-party koro web origins that we ALWAYS allow regardless of
+// First-party web origins that we ALWAYS allow regardless of
 // CORS_ORIGINS env. Lets us roll out new sub-apps (meet, bio, future
-// dashboards) without an ops change for every new hostname.
-const FIRST_PARTY_HOST_RE = /^https?:\/\/(?:[a-z0-9-]+\.)?koro\.(?:chat|bio)(?::\d+)?$/i;
+// dashboards) without an ops change for every new hostname. Both
+// koro.{chat,bio} (consumer brand) and nexoro.{net,com} (B2B brand)
+// share the same API — koro-meet runs co-branded on `meet.nexoro.net`
+// so we whitelist both root domains.
+const FIRST_PARTY_HOST_RE = /^https?:\/\/(?:[a-z0-9-]+\.)?(?:koro\.(?:chat|bio)|nexoro\.(?:net|com))(?::\d+)?$/i;
 // Localhost variants for `npm run dev` on each web app.
 const LOCAL_HOST_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/i;
 
