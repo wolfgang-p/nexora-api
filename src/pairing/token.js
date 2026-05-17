@@ -60,9 +60,18 @@ async function getPairingToken(req, res, { params }) {
     return serverError(res, 'Could not mark token issued', updateErr);
   }
 
+  // Surface minimal user + device info so first-party clients (koro-meet,
+  // koro-web) can hydrate their local identity without a second /me call.
+  const { data: user } = await supabase.from('users')
+    .select('id, username, display_name, avatar_url')
+    .eq('id', userId)
+    .maybeSingle();
+
   ok(res, {
     access_token: accessToken,
     refresh_token: refreshToken,
+    device_id: deviceId,
+    user: user || null,
     device_secret_ciphertext: sess.device_secret_ciphertext,
     device_secret_nonce: sess.device_secret_nonce,
   });
