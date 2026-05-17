@@ -439,8 +439,10 @@ function corsHeaders(req) {
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
     // `x-koro-meet-device` carries the per-tab guest UUID for koro-meet
     // endpoints that accept anonymous callers; reflect it in preflight.
+    // `x-file-name` + `x-conversation-id` are raw-body upload metadata
+    // used by /media/upload and /meetings/:roomId/pdf-upload.
     'Access-Control-Allow-Headers':
-      'Authorization, Content-Type, X-Koro-Signature, X-Koro-Meet-Device',
+      'Authorization, Content-Type, X-Koro-Signature, X-Koro-Meet-Device, X-File-Name, X-Conversation-Id',
     'Access-Control-Max-Age': '86400',
     'Vary': 'Origin',
   };
