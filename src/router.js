@@ -311,6 +311,10 @@ r('PATCH',  '/meetings/:roomId',                meetings.update);
 r('DELETE', '/meetings/:roomId',                meetings.destroy);
 r('GET',    '/meetings/:roomId/messages',       meetings.listMessages,  { auth: false });
 r('POST',   '/meetings/:roomId/messages',       meetings.postMessage,   { auth: false, optionalAuth: true });
+r('POST',   '/meetings/:roomId/start',          meetings.startNow);
+r('POST',   '/meetings/:roomId/participants/:participantId/kick', meetings.kickParticipant);
+r('PATCH',  '/meetings/:roomId/pdf',            meetings.setPdf);
+r('DELETE', '/meetings/:roomId/pdf',            meetings.clearPdf);
 
 // --- koro.bio (LinkTree) ---
 r('GET',    '/bio/me',                       bio.getMine);

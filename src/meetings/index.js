@@ -165,6 +165,28 @@ async function join(req, res, { params }) {
   if (meeting.locked) return forbidden(res, 'Meeting is locked');
   if (!actor.userId && !meeting.allow_guests) return forbidden(res, 'Guests not allowed');
   if (meeting.ended_at) return forbidden(res, 'Meeting has ended');
+  // Banned device list (set by host via /participants/:id/kick). The
+  // handle stored here matches whatever WS routing key was active when
+  // the kick happened, so we test both prefixed + bare forms to catch
+  // any prefix mismatches between historic data and the current actor.
+  const banned = meeting.banned_devices || [];
+  if (banned.length) {
+    const bareForBan = actor.deviceId.startsWith('meet:') ? actor.deviceId.slice(5) : actor.deviceId;
+    const prefForBan = actor.deviceId.startsWith('meet:') ? actor.deviceId : `meet:${actor.deviceId}`;
+    if (banned.includes(bareForBan) || banned.includes(prefForBan)) {
+      return forbidden(res, 'Du wurdest aus diesem Meeting entfernt.');
+    }
+  }
+  // Pre-start gate: until the host explicitly starts the meeting (or the
+  // scheduled time arrives), only the host themselves may enter. Other
+  // users see the countdown screen and join when the timer hits zero.
+  if (meeting.scheduled_at && !meeting.started_at) {
+    const scheduledMs = new Date(meeting.scheduled_at).getTime();
+    if (Date.now() < scheduledMs) {
+      const isHost = actor.userId && actor.userId === meeting.host_user_id;
+      if (!isHost) return forbidden(res, 'Meeting hat noch nicht begonnen.');
+    }
+  }
 
   // Active-participant cap.
   const { count } = await supabase.from('meeting_participants')
@@ -382,4 +404,200 @@ async function postMessage(req, res, { params }) {
   ok(res, { message: msg });
 }
 
-module.exports = { create, listMine, getOne, join, leave, update, destroy, listMessages, postMessage };
+// ── Host actions ──────────────────────────────────────────────────────
+
+/** Common: load the meeting + assert the caller is its host. */
+async function assertHost(req, res, roomId) {
+  if (!req.auth?.userId) { forbidden(res, 'Auth required'); return null; }
+  const { data: meeting } = await supabase.from('meetings')
+    .select('*').eq('room_id', roomId).maybeSingle();
+  if (!meeting) { notFound(res); return null; }
+  if (meeting.host_user_id !== req.auth.userId) { forbidden(res, 'Host only'); return null; }
+  return meeting;
+}
+
+/**
+ * POST /meetings/:roomId/start
+ * Host can skip the scheduled countdown and open the room for everyone
+ * right now. We set started_at + clear scheduled_at so the join gate
+ * stops blocking guests, and broadcast `meet.started` so any clients
+ * sitting on the countdown screen route into the lobby.
+ */
+async function startNow(req, res, { params }) {
+  const meeting = await assertHost(req, res, params.roomId);
+  if (!meeting) return;
+
+  const now = new Date().toISOString();
+  const { data: updated, error } = await supabase.from('meetings').update({
+    started_at: meeting.started_at || now,
+    scheduled_at: null,
+    updated_at: now,
+  }).eq('id', meeting.id).select('*').single();
+  if (error) return serverError(res, 'Start failed', error);
+
+  // Best-effort fan-out. Anyone in the countdown will pick this up and
+  // jump into the lobby.
+  try {
+    const { sendTo } = require('../ws/dispatch');
+    const { data: peers } = await supabase.from('meeting_participants')
+      .select('device_id').eq('meeting_id', meeting.id).is('left_at', null);
+    for (const p of peers || []) {
+      sendTo(p.device_id, {
+        type: 'meet.broadcast',
+        meeting_id: params.roomId,
+        subtype: 'started',
+        payload: { started_at: updated.started_at },
+      });
+    }
+  } catch (err) { console.warn('[meet.start]', err); }
+
+  ok(res, { meeting: updated });
+}
+
+/**
+ * POST /meetings/:roomId/participants/:participantId/kick
+ * Host removes a participant from the room and bans their device_id so
+ * they can't rejoin. We fan a `meet.kicked` event to the kicked device
+ * so its client can drop the connection + show a message, and a
+ * `roster.changed` to everyone else so their UIs update.
+ */
+async function kickParticipant(req, res, { params }) {
+  const meeting = await assertHost(req, res, params.roomId);
+  if (!meeting) return;
+
+  const { data: participant } = await supabase.from('meeting_participants')
+    .select('*').eq('id', params.participantId)
+    .eq('meeting_id', meeting.id).maybeSingle();
+  if (!participant) return notFound(res, 'Participant not found');
+  if (participant.user_id && participant.user_id === meeting.host_user_id) {
+    return badRequest(res, 'Host kann sich nicht selbst entfernen.');
+  }
+
+  const now = new Date().toISOString();
+  await supabase.from('meeting_participants').update({ left_at: now })
+    .eq('id', participant.id);
+
+  const nextBanned = Array.from(new Set([...(meeting.banned_devices || []), participant.device_id]));
+  await supabase.from('meetings').update({
+    banned_devices: nextBanned,
+    updated_at: now,
+  }).eq('id', meeting.id);
+
+  try {
+    const { sendTo } = require('../ws/dispatch');
+    // Tell the kicked device so its client routes out immediately.
+    sendTo(participant.device_id, {
+      type: 'meet.kicked',
+      meeting_id: params.roomId,
+      reason: 'kicked_by_host',
+    });
+    // Refresh everyone else's roster.
+    const { data: peers } = await supabase.from('meeting_participants')
+      .select('device_id').eq('meeting_id', meeting.id).is('left_at', null);
+    for (const p of peers || []) {
+      sendTo(p.device_id, {
+        type: 'meet.broadcast',
+        meeting_id: params.roomId,
+        subtype: 'roster.changed',
+        from_device_id: participant.device_id,
+        payload: null,
+      });
+    }
+  } catch (err) { console.warn('[meet.kick]', err); }
+
+  audit({
+    userId: req.auth.userId, deviceId: req.auth.deviceId,
+    action: 'meeting.kick', targetType: 'meeting_participant', targetId: participant.id,
+    metadata: { meeting_id: meeting.id, device_id: participant.device_id }, req,
+  });
+
+  ok(res, { ok: true });
+}
+
+/**
+ * PATCH /meetings/:roomId/pdf
+ * Body: { media_id: <uuid>, name: <string> }
+ * Host pins a PDF that's already been uploaded via /media/upload. We
+ * derive the canonical public URL from the media row + broadcast a
+ * meet.broadcast subtype=pdf so live clients open the panel.
+ *
+ * DELETE /meetings/:roomId/pdf clears it.
+ */
+async function setPdf(req, res, { params }) {
+  const meeting = await assertHost(req, res, params.roomId);
+  if (!meeting) return;
+  const body = await readJson(req).catch(() => null) || {};
+  const mediaId = body.media_id;
+  if (!mediaId) return badRequest(res, 'media_id required');
+
+  const { data: media } = await supabase.from('media_objects')
+    .select('id, mime_type, size_bytes').eq('id', mediaId).maybeSingle();
+  if (!media) return notFound(res, 'Media not found');
+  if (!/pdf/i.test(media.mime_type || '')) {
+    return badRequest(res, 'Nur PDFs werden unterstützt.');
+  }
+
+  const proto = req.headers['x-forwarded-proto'] || (req.socket.encrypted ? 'https' : 'http');
+  const host  = req.headers['x-forwarded-host'] || req.headers.host;
+  const url = `${proto}://${host}/media/${media.id}`;
+
+  const pdf = {
+    media_id: media.id,
+    url,
+    name: String(body.name || 'document.pdf').slice(0, 200),
+    size_bytes: media.size_bytes,
+    uploaded_at: new Date().toISOString(),
+    uploaded_by: req.auth.userId,
+  };
+
+  const { data: updated, error } = await supabase.from('meetings').update({
+    pdf, updated_at: new Date().toISOString(),
+  }).eq('id', meeting.id).select('*').single();
+  if (error) return serverError(res, 'PDF set failed', error);
+
+  // Fan out so live clients open the panel.
+  try {
+    const { sendTo } = require('../ws/dispatch');
+    const { data: peers } = await supabase.from('meeting_participants')
+      .select('device_id').eq('meeting_id', meeting.id).is('left_at', null);
+    for (const p of peers || []) {
+      sendTo(p.device_id, {
+        type: 'meet.broadcast',
+        meeting_id: params.roomId,
+        subtype: 'pdf',
+        payload: { pdf },
+      });
+    }
+  } catch (err) { console.warn('[meet.pdf]', err); }
+
+  ok(res, { meeting: updated });
+}
+
+async function clearPdf(req, res, { params }) {
+  const meeting = await assertHost(req, res, params.roomId);
+  if (!meeting) return;
+  const { data: updated, error } = await supabase.from('meetings').update({
+    pdf: null, updated_at: new Date().toISOString(),
+  }).eq('id', meeting.id).select('*').single();
+  if (error) return serverError(res, 'PDF clear failed', error);
+  try {
+    const { sendTo } = require('../ws/dispatch');
+    const { data: peers } = await supabase.from('meeting_participants')
+      .select('device_id').eq('meeting_id', meeting.id).is('left_at', null);
+    for (const p of peers || []) {
+      sendTo(p.device_id, {
+        type: 'meet.broadcast',
+        meeting_id: params.roomId,
+        subtype: 'pdf',
+        payload: { pdf: null },
+      });
+    }
+  } catch (err) { console.warn('[meet.pdf]', err); }
+  ok(res, { meeting: updated });
+}
+
+module.exports = {
+  create, listMine, getOne, join, leave, update, destroy,
+  listMessages, postMessage,
+  startNow, kickParticipant, setPdf, clearPdf,
+};
