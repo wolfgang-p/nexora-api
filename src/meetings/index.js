@@ -686,9 +686,14 @@ async function uploadPdf(req, res, { params }) {
   }
   const sha256 = hash.digest('hex');
 
+  // Only stamp a real device on the row when the caller authenticated
+  // through the koro session pipeline (req.auth set by the Bearer JWT).
+  // The koro-meet `x-koro-meet-device` header is a per-browser UUID that
+  // does NOT exist in the `devices` table — using it here would trip
+  // the foreign-key constraint. Leave it NULL for guest-host uploads.
   const { data: media, error: insErr } = await supabase.from('media_objects').insert({
     uploader_user_id: req.auth?.userId || null,
-    uploader_device_id: req.auth?.deviceId || req.headers['x-koro-meet-device'] || null,
+    uploader_device_id: req.auth?.deviceId || null,
     conversation_id: null,
     storage_key: p.storageKey,
     mime_type: mime,
