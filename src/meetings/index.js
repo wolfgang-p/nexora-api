@@ -174,19 +174,42 @@ async function join(req, res, { params }) {
     return forbidden(res, 'Meeting is full');
   }
 
-  // Reuse any existing row for this device — covers refresh / quick re-join.
-  const { data: existing } = await supabase.from('meeting_participants')
-    .select('*').eq('meeting_id', meeting.id).eq('device_id', actor.deviceId).maybeSingle();
+  // Find any active row that semantically represents this actor — covers:
+  //   (a) Plain rejoin (same device_id).
+  //   (b) Pre-prefix-fix rows where the same device was stored as the
+  //       bare uuid before we started prepending `meet:` for guests.
+  //   (c) Koro user reconnecting from a new device (same user_id).
+  // We reuse the most recent matching row and mark all the others as
+  // left so the user never appears twice in the roster.
+  const bareDeviceId = actor.deviceId.startsWith('meet:') ? actor.deviceId.slice(5) : actor.deviceId;
+  const prefDeviceId = actor.deviceId.startsWith('meet:') ? actor.deviceId : `meet:${actor.deviceId}`;
+  let orFilter = `device_id.eq.${bareDeviceId},device_id.eq.${prefDeviceId}`;
+  if (actor.userId) orFilter += `,user_id.eq.${actor.userId}`;
+
+  const { data: existingRows } = await supabase.from('meeting_participants')
+    .select('*').eq('meeting_id', meeting.id).is('left_at', null).or(orFilter);
 
   let participant;
-  if (existing) {
+  if (existingRows && existingRows.length > 0) {
+    // Prefer the row that already matches the current device_id exactly;
+    // otherwise take the most recently joined one.
+    const sorted = [...existingRows].sort((a, b) =>
+      new Date(b.joined_at).getTime() - new Date(a.joined_at).getTime());
+    const keep = sorted.find((r) => r.device_id === actor.deviceId) || sorted[0];
+    const others = sorted.filter((r) => r.id !== keep.id);
+    if (others.length) {
+      await supabase.from('meeting_participants')
+        .update({ left_at: new Date().toISOString() })
+        .in('id', others.map((r) => r.id));
+    }
     const { data, error } = await supabase.from('meeting_participants').update({
       left_at: null,
+      device_id: actor.deviceId, // normalise to the current handle form
       display_name: actor.displayName,
-      avatar_url: body.avatar_url || existing.avatar_url || null,
-      user_id: actor.userId || existing.user_id,
+      avatar_url: body.avatar_url || keep.avatar_url || null,
+      user_id: actor.userId || keep.user_id,
       guest_name: actor.userId ? null : actor.displayName,
-    }).eq('id', existing.id).select('*').single();
+    }).eq('id', keep.id).select('*').single();
     if (error) return serverError(res, 'Rejoin failed', error);
     participant = data;
   } else {
