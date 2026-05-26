@@ -48,6 +48,73 @@ function newRoomId() {
   return `${out.slice(0, 3)}-${out.slice(3, 7)}-${out.slice(7)}`;
 }
 
+// koro-meet is a single front-end served under two branded domains:
+//   • Koro   → https://meet.koro.chat
+//   • Nexoro → https://meet.nexoro.net
+// The front-end picks its brand from window.location.hostname (see
+// koro-meet src/app/layout.tsx). We mirror that here so the meeting link
+// we hand back points at whichever brand the request came from.
+//
+// Override per-environment (e.g. staging) via MEET_BASE_URL_KORO /
+// MEET_BASE_URL_NEXORO. MEET_BASE_URL is kept as a legacy fallback for
+// the Koro base.
+const MEET_BASE_KORO = (process.env.MEET_BASE_URL_KORO || process.env.MEET_BASE_URL || 'https://meet.koro.chat').replace(/\/+$/, '');
+const MEET_BASE_NEXORO = (process.env.MEET_BASE_URL_NEXORO || 'https://meet.nexoro.net').replace(/\/+$/, '');
+
+// Decide the meet front-end base for this request's brand. Rule (per
+// product spec): a request whose origin is on koro.chat gets the Koro
+// front-end; a request from ANY other domain gets the Nexoro front-end.
+// When no origin can be determined at all (e.g. a server-to-server call
+// with no Origin/Referer header) we fall back to the Koro base.
+function meetBaseForReq(req) {
+  const src = req.headers.origin || req.headers.referer || '';
+  let host = '';
+  try { host = src ? new URL(src).hostname : ''; } catch { /* malformed */ }
+  if (!host) return MEET_BASE_KORO;
+  return /(^|\.)koro\.chat$/i.test(host) ? MEET_BASE_KORO : MEET_BASE_NEXORO;
+}
+
+function meetingUrl(req, roomId) {
+  return `${meetBaseForReq(req)}/m/${roomId}`;
+}
+
+// Resolve the scheduled start time from the request body. Accepts either:
+//   • scheduled_at — a full ISO-8601 timestamp, e.g. "2026-06-01T15:00:00Z"
+//     or "2026-06-01T15:00:00+02:00"; OR
+//   • date + time  — "YYYY-MM-DD" + "HH:MM" (seconds optional), combined
+//     with an explicit utc_offset ("+02:00"; default "Z" = UTC). Splitting
+//     date/time is convenient for form-style callers, but the offset is
+//     required to pin an unambiguous instant — without it we assume UTC.
+// Returns { date: Date|null, error: string|null }. No schedule fields →
+// { date: null } meaning an instant (start-now) meeting.
+function resolveScheduledAt(body) {
+  if (body.scheduled_at) {
+    const d = new Date(body.scheduled_at);
+    return Number.isNaN(d.getTime())
+      ? { date: null, error: 'scheduled_at invalid (use ISO-8601, e.g. 2026-06-01T15:00:00Z)' }
+      : { date: d, error: null };
+  }
+  if (body.date || body.time) {
+    if (!body.date || !body.time) {
+      return { date: null, error: 'date and time must be provided together (YYYY-MM-DD + HH:MM)' };
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(String(body.date))) {
+      return { date: null, error: 'date invalid (expected YYYY-MM-DD)' };
+    }
+    const rawTime = String(body.time);
+    if (!/^\d{2}:\d{2}(:\d{2})?$/.test(rawTime)) {
+      return { date: null, error: 'time invalid (expected HH:MM or HH:MM:SS)' };
+    }
+    const time = rawTime.length === 5 ? `${rawTime}:00` : rawTime;
+    const offset = body.utc_offset ? String(body.utc_offset) : 'Z';
+    const d = new Date(`${body.date}T${time}${offset}`);
+    return Number.isNaN(d.getTime())
+      ? { date: null, error: 'date/time/utc_offset combination invalid' }
+      : { date: d, error: null };
+  }
+  return { date: null, error: null }; // no schedule → instant meeting
+}
+
 // Pull either the authed user OR a guest identifier from the request.
 // `device_id` and `display_name` are required for both.
 //
@@ -82,16 +149,21 @@ function actorFor(req, body) {
 async function create(req, res) {
   const body = await readJson(req).catch(() => null) || {};
   const actor = actorFor(req, body);
-  if (!actor.deviceId) return badRequest(res, 'device_id required');
-  if (!actor.userId && !actor.guestName) return badRequest(res, 'display_name required for guests');
 
   const title = (body.title || '').trim();
   if (!title || title.length > 200) return badRequest(res, 'title required (≤200 chars)');
 
-  const scheduledAt = body.scheduled_at ? new Date(body.scheduled_at) : null;
-  if (body.scheduled_at && Number.isNaN(scheduledAt?.getTime())) {
-    return badRequest(res, 'scheduled_at invalid');
+  // Host display name. An explicit `host_name` wins; otherwise we fall back
+  // to `display_name` (kept for backwards compatibility with the in-app
+  // guest-create flow). Authenticated callers are identified by their
+  // account via host_user_id, so host_name stays null for them.
+  const hostName = (body.host_name || body.display_name || '').toString().trim().slice(0, 64);
+  if (!actor.userId && !hostName) {
+    return badRequest(res, 'host_name required when creating without a Koro account');
   }
+
+  const { date: scheduledAt, error: schedErr } = resolveScheduledAt(body);
+  if (schedErr) return badRequest(res, schedErr);
 
   // Make sure a freshly minted slug isn't already in use (vanishingly
   // unlikely, but cheap to verify).
@@ -107,7 +179,7 @@ async function create(req, res) {
     title,
     description: body.description ? String(body.description).slice(0, 2000) : null,
     host_user_id: actor.userId,
-    host_name: actor.userId ? null : actor.guestName,
+    host_name: actor.userId ? null : hostName,
     workspace_id: body.workspace_id || null,
     scheduled_at: scheduledAt ? scheduledAt.toISOString() : null,
     max_participants: Math.max(2, Math.min(50, Number(body.max_participants) || 50)),
@@ -121,7 +193,10 @@ async function create(req, res) {
       metadata: { room_id: roomId }, req });
   }
 
-  created(res, { meeting });
+  // The shareable join link is the whole point for API callers, so surface
+  // it (plus the bare room_id) alongside the full meeting record. The link's
+  // domain follows the brand of the requesting origin (Koro vs Nexoro).
+  created(res, { meeting, room_id: roomId, url: meetingUrl(req, roomId) });
 }
 
 async function listMine(req, res) {
