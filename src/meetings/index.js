@@ -351,8 +351,15 @@ async function leave(req, res, { params }) {
   if (!deviceId) return badRequest(res, 'device_id required');
 
   const { data: meeting } = await supabase.from('meetings')
-    .select('id, host_user_id').eq('room_id', params.roomId).maybeSingle();
+    .select('id, host_user_id, ended_at').eq('room_id', params.roomId).maybeSingle();
   if (!meeting) return notFound(res);
+
+  // Is the leaver the host? Either the Koro account that owns the meeting, or
+  // the participant row flagged is_host (covers guest-hosted meetings).
+  const { data: leaver } = await supabase.from('meeting_participants')
+    .select('is_host').eq('meeting_id', meeting.id).eq('device_id', deviceId).is('left_at', null).maybeSingle();
+  const leaverIsHost =
+    (!!meeting.host_user_id && !!actor.userId && meeting.host_user_id === actor.userId) || !!leaver?.is_host;
 
   await supabase.from('meeting_participants').update({
     left_at: new Date().toISOString(),
@@ -377,6 +384,24 @@ async function leave(req, res, { params }) {
     }
   } catch (err) { console.warn('[meet.leave]', err); }
 
+  // Host left → end the meeting for everyone and tell remaining clients to
+  // drop out. (Also covers the "host closes the room" expectation.)
+  if (leaverIsHost && !meeting.ended_at) {
+    await supabase.from('meetings').update({ ended_at: new Date().toISOString() }).eq('id', meeting.id);
+    try {
+      const { sendTo } = require('../ws/dispatch');
+      const { data: rest } = await supabase.from('meeting_participants')
+        .select('device_id').eq('meeting_id', meeting.id).is('left_at', null);
+      for (const p of rest || []) {
+        sendTo(p.device_id, {
+          type: 'meet.broadcast', meeting_id: params.roomId, subtype: 'ended',
+          from_device_id: deviceId, payload: { reason: 'host_left' },
+        });
+      }
+    } catch (err) { console.warn('[meet.leave.hostEnd]', err); }
+    return ok(res, { ok: true, ended: true });
+  }
+
   // If everyone left, mark the meeting ended (allows the dashboard to
   // surface duration). Schedule-clean meetings stay around until the
   // host explicitly deletes.
@@ -388,6 +413,26 @@ async function leave(req, res, { params }) {
       .eq('id', meeting.id);
   }
 
+  ok(res, { ok: true });
+}
+
+/**
+ * POST /meetings/:roomId/end  (host only) — end a meeting from the overview.
+ * Sets ended_at and broadcasts `ended` so any live participants drop out.
+ */
+async function endMeeting(req, res, { params }) {
+  const meeting = await assertHost(req, res, params.roomId);
+  if (!meeting) return;
+  const now = new Date().toISOString();
+  await supabase.from('meetings').update({ ended_at: meeting.ended_at || now, updated_at: now }).eq('id', meeting.id);
+  try {
+    const { sendTo } = require('../ws/dispatch');
+    const { data: peers } = await supabase.from('meeting_participants')
+      .select('device_id').eq('meeting_id', meeting.id).is('left_at', null);
+    for (const p of peers || []) {
+      sendTo(p.device_id, { type: 'meet.broadcast', meeting_id: params.roomId, subtype: 'ended', payload: { reason: 'host_ended' } });
+    }
+  } catch (err) { console.warn('[meet.end]', err); }
   ok(res, { ok: true });
 }
 
@@ -819,5 +864,5 @@ async function uploadPdf(req, res, { params }) {
 module.exports = {
   create, listMine, getOne, join, leave, update, destroy,
   listMessages, postMessage,
-  startNow, kickParticipant, setPdf, clearPdf, uploadPdf,
+  startNow, kickParticipant, setPdf, clearPdf, uploadPdf, endMeeting,
 };
