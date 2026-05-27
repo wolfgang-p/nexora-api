@@ -354,6 +354,12 @@ r('DELETE', '/stories/:id/reactions/:emoji',     stories.unreact);
 r('GET',    '/users/me/settings', userSettings.get);
 r('PUT',    '/users/me/settings', userSettings.update);
 
+// --- E2E key backup (zero-knowledge; recover message history) ---
+const keyBackup = require('./keys/backup');
+r('GET',    '/keys/backup', keyBackup.getBackup);
+r('PUT',    '/keys/backup', keyBackup.putBackup);
+r('DELETE', '/keys/backup', keyBackup.deleteBackup);
+
 // --- Communities ---
 r('GET',    '/communities',                              communities.list);
 r('POST',   '/communities',                              communities.create);
