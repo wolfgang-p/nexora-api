@@ -61,13 +61,25 @@ module.exports = {
     expoAccessToken: process.env.EXPO_ACCESS_TOKEN || null,
   },
 
-  // WebRTC NAT traversal. Multiple URLs comma-separated in env — at
-  // minimum a STUN server, plus a TURN server with username+credential
-  // for strict-NAT peers (corporate networks etc).
+  // WebRTC NAT traversal. A TURN relay is REQUIRED for peers behind
+  // symmetric / carrier-grade NAT (most mobile data networks) — STUN alone
+  // can't traverse those and the call silently fails.
+  //
+  // Preferred: Cloudflare Realtime TURN. Set TURN_KEY_ID + TURN_TOKEN and
+  // the /calls/ice-servers endpoint mints short-lived credentials per
+  // request (the secret token never leaves the server).
+  //
+  // Alternative: a provider with static long-term credentials (Metered,
+  // Twilio, self-hosted coturn) via TURN_URLS + TURN_USERNAME/CREDENTIAL.
   ice: {
     stunUrls: list('STUN_URLS', ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302']),
     turnUrls: list('TURN_URLS'),
     turnUsername: process.env.TURN_USERNAME || null,
     turnCredential: process.env.TURN_CREDENTIAL || null,
+    // Cloudflare Realtime TURN (ephemeral credentials).
+    cfTurnKeyId: process.env.TURN_KEY_ID || null,
+    cfTurnToken: process.env.TURN_TOKEN || null,
+    // TTL (seconds) for minted credentials — longer than any single call.
+    turnTtl: int('TURN_TTL', 86400),
   },
 };
