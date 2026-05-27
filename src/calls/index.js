@@ -95,6 +95,12 @@ async function start(req, res) {
   // online peers this is a no-op — fine; they'll get the call from the
   // unread-list / chat header when they come online.
   if (reachable && targetDeviceIds.length) {
+    // Resolve the caller's display info up front so the ring (WS + push)
+    // can show a name/avatar instead of "Unbekannt" on the callee side.
+    const { data: caller } = await supabase.from('users')
+      .select('display_name, username, avatar_url').eq('id', req.auth.userId).maybeSingle();
+    const fromName = caller?.display_name || caller?.username || 'Unbekannt';
+
     broadcastToDevices(targetDeviceIds, () => ({
       type: 'call.incoming',
       call_id: call.id,
@@ -102,11 +108,9 @@ async function start(req, res) {
       kind: call.kind,
       from_user_id: req.auth.userId,
       from_device_id: req.auth.deviceId,
+      from_display_name: fromName,
+      from_avatar_url: caller?.avatar_url || null,
     }));
-
-    const { data: caller } = await supabase.from('users')
-      .select('display_name, username').eq('id', req.auth.userId).maybeSingle();
-    const fromName = caller?.display_name || caller?.username || 'Unbekannt';
 
     pushIncomingCall(targetDeviceIds, {
       callId: call.id,
