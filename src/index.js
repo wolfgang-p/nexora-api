@@ -7,6 +7,7 @@ const { handleRequest } = require('./router');
 const { attachWsServer } = require('./ws/server');
 const { drainLocalSockets, stopBus } = require('./ws/dispatch');
 const lifecycle = require('./util/lifecycle');
+const status = require('./admin/status');
 const webhookWorker = require('./webhooks/worker');
 const scheduler = require('./scheduler');
 
@@ -58,6 +59,8 @@ server.listen(config.port, '0.0.0.0', () => {
   webhookWorker.start();
   console.log('[koro-api] webhook retry worker started');
   scheduler.start();
+  status.startStatusHeartbeat();
+  console.log(`[koro-api] status heartbeat started (instance=${config.instanceId})`);
 });
 
 // Graceful, zero-downtime-friendly shutdown:
@@ -81,6 +84,8 @@ async function shutdown(sig) {
 
   webhookWorker.stop();
   scheduler.stop();
+  status.stopStatusHeartbeat();
+  await status.recordEvent('shutdown', { sig });
 
   await sleep(config.drainDelayMs);
 

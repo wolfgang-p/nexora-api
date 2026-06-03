@@ -16,12 +16,18 @@ x-api-common: &api-common
   build:
     context: ..
     dockerfile: Dockerfile
+    args:
+      # deploy.sh exports these; manual builds default to "unknown".
+      GIT_COMMIT: ${GIT_COMMIT:-unknown}
+      GIT_COMMITTED_AT: ${GIT_COMMITTED_AT:-}
   image: koro-api:latest
   restart: unless-stopped
   env_file:
     - ../.env
   volumes:
     - koro-uploads:/app/uploads
+    # Read-only git history so /status can show the deploy/commit log.
+    - ../.git:/repo/.git:ro
   networks:
     - edge
   depends_on:

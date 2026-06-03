@@ -40,6 +40,15 @@ function busEnabled() {
   return pub != null;
 }
 
+/**
+ * The non-subscriber Redis client (safe for normal commands), or null in
+ * single-instance mode. Used by the status dashboard to read cross-instance
+ * snapshots, the event log and Redis INFO.
+ */
+function getBusClient() {
+  return pub;
+}
+
 /** Wire up Redis. No-op (single-instance mode) when REDIS_URL is unset. */
 function startBus() {
   if (!config.redisUrl || pub) return;
@@ -233,5 +242,5 @@ function drainLocalSockets(code = 1012, reason = 'restart') {
 
 module.exports = {
   register, unregister, sendTo, broadcastToDevices, disconnectDevice,
-  deviceOnline, wsStats, startBus, stopBus, drainLocalSockets,
+  deviceOnline, wsStats, startBus, stopBus, drainLocalSockets, getBusClient,
 };

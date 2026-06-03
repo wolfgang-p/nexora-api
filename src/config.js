@@ -45,6 +45,16 @@ module.exports = {
   // ceiling after which we force-exit.
   drainDelayMs: int('DRAIN_DELAY_MS', 5000),
   shutdownTimeoutMs: int('SHUTDOWN_TIMEOUT_MS', 15000),
+  // Single fixed password (HTTP Basic) for the /status dashboard. When unset,
+  // /status is disabled (503) rather than open.
+  statusPassword: process.env.STATUS_PASSWORD || null,
+  // Read-only git dir mounted into the container so /status can show the
+  // deploy/commit history.
+  gitDir: process.env.GIT_DIR || '/repo/.git',
+  build: {
+    commit: process.env.GIT_COMMIT || 'unknown',
+    committedAt: process.env.GIT_COMMITTED_AT || null,
+  },
 
   supabase: {
     url: required('SUPABASE_URL'),

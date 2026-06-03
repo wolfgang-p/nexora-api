@@ -21,6 +21,14 @@ published Signaling auf den Bus; die anderen Instanzen liefern an ihre Sockets.
 Ein Presence-Mirror hält `deviceOnline` instanzübergreifend korrekt. Ohne
 `REDIS_URL` läuft alles unverändert als Einzelinstanz.
 
+> **Redis ist selbst gehostet** — es läuft als eigener Container
+> (`redis:7-alpine`, Service `redis` in `deploy/docker-compose.api.yml`) auf
+> deinem Server, **keine externe Abhängigkeit**. Daten sind rein transient
+> (Pub/Sub + Presence + Status-Snapshots), daher bewusst **ohne Persistenz**
+> (`--appendonly no --save ""`) — bei einem Redis-Neustart bauen sich Presence
+> und Status binnen Sekunden neu auf. Erreichbar nur intern im `edge`-Netz
+> unter `redis://redis:6379`, nie öffentlich.
+
 **Beruhigend bei Deploys:** Aktive Call-/Meeting-**Medien laufen P2P bzw. über
 TURN — nie über diesen Server.** Der Server macht nur Signaling. Ein
 Instanz-Neustart unterbricht also **kein laufendes Audio/Video**. Beim Rolling
@@ -147,6 +155,9 @@ SUPABASE_URL=http://supabase-kong:8000              # intern!
 SUPABASE_SERVICE_ROLE_KEY=<neuer service_role key>
 SUPABASE_ANON_KEY=<neuer anon key>
 CORS_ORIGINS=https://koro.chat,https://crm.koro.chat,https://api.koro.chat
+
+# Passwort fürs Status-Dashboard (HTTP Basic, ein fixes Passwort, kein User-Mgmt)
+STATUS_PASSWORD=koro-status-da296d00e4ca51deeab0890457876f54
 ```
 
 `REDIS_URL`, `INSTANCE_ID`, `CERT_DIR`, `DRAIN_DELAY_MS` werden vom
@@ -209,7 +220,47 @@ crontab -e
 
 ---
 
-## 6. Neue Services hinzufügen — ohne Restart der laufenden
+## 6. Status-Dashboard
+
+Erreichbar unter **`https://api.koro.chat:3001/status`** (und `…/status` auf
+443). Ein **fixes Passwort** via HTTP Basic — beim Aufruf fragt der Browser
+einen Login ab; **Username egal**, nur das Passwort zählt:
+
+```
+Passwort:  koro-status-da296d00e4ca51deeab0890457876f54
+```
+
+> Steht als `STATUS_PASSWORD` in der `.env` (Schritt 3). Ist es nicht gesetzt,
+> ist `/status` deaktiviert (503) — nie offen. Zum Ändern: `.env` anpassen +
+> `./deploy/deploy.sh` (oder beide Instanzen neu starten).
+
+Das Dashboard (auto-refresh alle 5 s) zeigt **alles auf einen Blick**:
+
+- **API-Instanzen blue + green** — online/offline, Uptime, laufender Commit,
+  Speicher (RSS/Heap), Prozess-CPU, **Event-Loop-Lag** (x̄/p99/max), WS-Sockets
+  & -Devices, Peer-Instanzen, aktive Handles, letzter Heartbeat.
+- **Redis** — Ping-Latenz, Version, Clients, Speicher, Ops/s, Befehle gesamt,
+  Uptime.
+- **Datenbank** — Erreichbarkeit + Latenz + geschätzte Zeilenzahlen (users,
+  conversations, messages, devices, meetings).
+- **Host-Auslastung** — CPU % (alle Cores), RAM, Load (1/5/15), **Disk-Belegung
+  des `uploads`-Volumes**, Host-Uptime.
+- **Event-/Restart-Log** — boot / shutdown / deploy-Events (Restart-Historie).
+- **Git-/Deploy-Historie** — letzte 30 Commits (aus dem read-only gemounteten
+  `.git`) + jeder Deploy als Event.
+
+Technik: jede Instanz schreibt ihren Snapshot alle 5 s nach Redis (TTL 15 s);
+die bedienende Instanz liest alle Snapshots zurück und aggregiert. Damit die
+Commit-Historie sichtbar ist, mountet `docker-compose.api.yml` das Repo-`.git`
+read-only nach `/repo/.git` und `deploy.sh` stempelt den laufenden Commit per
+Build-Arg ins Image (so siehst du auch **Drift**: laufender vs. neuester Commit).
+
+JSON-Rohdaten (z. B. für eigenes Monitoring): `GET /status/data` (gleiches
+Passwort).
+
+---
+
+## 7. Neue Services hinzufügen — ohne Restart der laufenden
 
 Genau dafür sind `edge` + Traefik-Auto-Discovery da. Neuer Dienst =
 eigene Compose-Datei mit Labels, dann `docker compose -f … up -d`. Traefik
@@ -236,7 +287,7 @@ networks:
 
 ---
 
-## 7. Cutover-Reihenfolge (alt → neu, ohne Datenverlust-Risiko)
+## 8. Cutover-Reihenfolge (alt → neu, ohne Datenverlust-Risiko)
 
 1. Neuen Server komplett aufsetzen (Schritte 0–4), DNS noch auf altem Server.
 2. Schema migrieren (Schritt 2) — leere, strukturgleiche DB.
@@ -269,6 +320,7 @@ networks:
 | Schema migrieren | `SRC_DB_URL=… DST_DB_URL=… ./deploy/migrate-schema.sh` |
 | Zero-Downtime-Deploy | `./deploy/deploy.sh` |
 | Health prüfen | `curl -s https://api.koro.chat:3001/health` |
+| Status-Dashboard | `https://api.koro.chat:3001/status` (Passwort s. Abschnitt 6) |
 
 ---
 

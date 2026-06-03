@@ -11,8 +11,11 @@ FROM node:20-alpine AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 
-# tini = correct PID 1 so SIGTERM reaches node and index.js shuts down gracefully
-RUN apk add --no-cache tini
+# tini   = correct PID 1 so SIGTERM reaches node and index.js shuts down cleanly
+# git     = lets the /status dashboard read the commit history from the
+#           read-only .git that docker-compose mounts at /repo/.git
+RUN apk add --no-cache tini git \
+ && git config --system --add safe.directory '*'
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json package-lock.json ./
@@ -22,6 +25,13 @@ COPY migrations ./migrations
 # uploads/ is a mounted volume at runtime; create the mount point so the
 # media layer (src/media/fs.js) can write before the volume is populated.
 RUN mkdir -p /app/uploads
+
+# Stamp the running build so /status can show the deployed commit (and detect
+# drift vs. the repo's latest). docker-compose passes these from deploy.sh.
+ARG GIT_COMMIT=unknown
+ARG GIT_COMMITTED_AT=
+ENV GIT_COMMIT=$GIT_COMMIT \
+    GIT_COMMITTED_AT=$GIT_COMMITTED_AT
 
 EXPOSE 3001
 

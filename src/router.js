@@ -6,6 +6,7 @@ const { authenticate, requireAdmin, optionalAuthenticate } = require('./auth/mid
 const { counter, httpResponse, observe } = require('./util/metrics');
 const logger = require('./util/logger');
 const lifecycle = require('./util/lifecycle');
+const status = require('./admin/status');
 
 // Route modules
 const otp = require('./auth/otp');
@@ -92,6 +93,10 @@ r('GET', '/health', async (req, res) => {
   }
   return ok(res, { ok: true });
 }, { auth: false });
+
+// --- Status dashboard (HTTP Basic, single fixed password) ---
+r('GET', '/status', status.statusPage, { auth: false });
+r('GET', '/status/data', status.statusData, { auth: false });
 
 // --- Auth ---
 r('POST', '/auth/request-otp', otp.requestOtp, { auth: false });

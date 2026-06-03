@@ -52,7 +52,10 @@ log "change detected: ${LOCAL:0:8} -> ${REMOTE:0:8} — deploying"
 git pull --ff-only origin "$BRANCH"
 
 # ── 2. Build the new image once ────────────────────────────────────────
-log "building image"
+# Stamp the running version into the image so /status shows the deployed commit.
+export GIT_COMMIT="$(git rev-parse --short HEAD)"
+export GIT_COMMITTED_AT="$(git show -s --format=%cI HEAD)"
+log "building image @ $GIT_COMMIT"
 $COMPOSE build
 
 # ── 3. Make sure redis is up, then roll instances one by one ───────────
@@ -60,5 +63,12 @@ $COMPOSE up -d --no-deps redis
 roll api-blue  koro-api-blue
 roll api-green koro-api-green
 
+# ── 4. Record the deploy in the dashboard's event log ──────────────────
+SUBJ="$(git log -1 --pretty=%s | tr -d '"\\' | cut -c1-120)"
+AUTHOR="$(git log -1 --pretty=%an | tr -d '"\\')"
+EVENT="{\"type\":\"deploy\",\"instance\":\"host\",\"commit\":\"$GIT_COMMIT\",\"subject\":\"$SUBJ\",\"author\":\"$AUTHOR\",\"at\":$(date +%s)000}"
+docker exec koro-redis redis-cli LPUSH koro:events "$EVENT" >/dev/null 2>&1 || true
+docker exec koro-redis redis-cli LTRIM koro:events 0 199 >/dev/null 2>&1 || true
+
 docker image prune -f >/dev/null 2>&1 || true
-log "deploy complete (now at $(git rev-parse --short HEAD))"
+log "deploy complete (now at $GIT_COMMIT)"
