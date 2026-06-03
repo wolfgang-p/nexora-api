@@ -5,7 +5,10 @@ name: proxy
 
 services:
   traefik:
-    image: traefik:v3.3
+    # v3 = aktuellstes v3.x. NICHT auf v3.3 pinnen: dessen Docker-Client ist zu
+    # alt für neue Docker-Engines (API >= 1.40) und die Auto-Discovery schlägt
+    # mit "client version 1.24 is too old" fehl.
+    image: traefik:v3
     container_name: traefik
     restart: unless-stopped
     ports:

@@ -100,6 +100,8 @@ cp .env.example .env
 openssl rand -hex 32          # -> POSTGRES_PASSWORD
 openssl rand -base64 48       # -> JWT_SECRET (signiert ANON_KEY + SERVICE_ROLE_KEY)
 ```
+04883bfb8a500e45aa796d57da1279492ec9bf5fa0fc30feb0b6a79e5a77f404
+sdDW50UBt1qG350PP5DUhRzqWa9qj4VinGicPWPye4uFDv9RoQfqN1FgjFX3iJbX
 
 Daraus passende `ANON_KEY` / `SERVICE_ROLE_KEY` erzeugen (mit deinem
 `JWT_SECRET` signieren):
@@ -128,8 +130,8 @@ Indizes), **null Datenzeilen**:
 
 ```bash
 cd /opt/koro-api
-SRC_DB_URL="postgresql://postgres.<ref>:<CLOUD_PW>@<cloud-host>:5432/postgres" \
-DST_DB_URL="postgresql://postgres:<NEW_POSTGRES_PASSWORD>@localhost:5432/postgres" \
+SRC_DB_URL="postgresql://postgres.ykqldbndudnybrbdjsxz:Cocolino123!@aws-1-eu-west-1.pooler.supabase.com:5432/postgres" \
+DST_DB_URL="postgresql://postgres:04883bfb8a500e45aa796d57da1279492ec9bf5fa0fc30feb0b6a79e5a77f404@localhost:5432/postgres" \
 ./deploy/migrate-schema.sh
 ```
 
