@@ -199,6 +199,68 @@ WebSocket `/ws` läuft automatisch über denselben Router.
 
 ---
 
+## 4b. Nach Rückmeldung von ECSNET (Hoster-Firewall)
+
+**Stand 03.06.2026:** Der Stack läuft serverseitig korrekt (Traefik up,
+blue/green antworten lokal mit `{"ok":true}`, Supabase geroutet), aber
+**ECSNET filtert upstream sämtliche neuen eingehenden TCP-Verbindungen**
+(getestet: 22, 80, 443, 3001 — alles Timeout von außen, ICMP geht durch,
+tcpdump auf dem Server sieht **0 SYNs** bei externem Dauerbeschuss). Lokale
+Firewall ist sauber (ufw inactive, `INPUT` policy ACCEPT, nft nur
+Docker-Standard). Deshalb scheitert die ACME-HTTP-01-Challenge → Self-signed-
+Fallback-Zertifikat. Ticket an ECSNET ist raus.
+
+> ⚠️ **SSH-Session offen lassen** — bestehende Verbindungen überleben den
+> Filter (Conntrack), neue nicht. Fallback: Web-Konsole im ECSNET-Panel.
+
+Sobald ECSNET freigeschaltet hat, in dieser Reihenfolge:
+
+**1. Erreichbarkeit von außen bestätigen** (externes Netz, z. B. Handy ohne
+WLAN — nicht vom Server selbst, Hairpin täuscht!):
+
+```bash
+nc -zv 212.89.161.109 80
+nc -zv 212.89.161.109 443
+nc -zv 212.89.161.109 3001
+nc -zv 212.89.161.109 22     # wichtig! Sonst nach SSH-Logout ausgesperrt
+```
+
+**2. ACME neu anstoßen** (auf dem Server):
+
+```bash
+docker restart traefik
+docker logs -f traefik 2>&1 | grep -i -E "acme|certificate|error"
+```
+
+Warten, bis **kein** `ERR Unable to obtain ACME certificate` mehr kommt
+(Erfolg = einfach keine Fehler mehr; Zertifikat liegt dann in `acme.json`).
+
+> **Let's-Encrypt-Rate-Limit:** max. 5 fehlgeschlagene Versuche/Stunde —
+> erst restarten, wenn Port 80 wirklich offen ist (Schritt 1 zuerst). Bei
+> „too many failed authorizations": 1 h warten, dann erneut
+> `docker restart traefik`.
+
+**3. Schritt-4-Tests abschließen** (echte Zertifikate, von außen):
+
+```bash
+curl -i https://api.koro.chat:3001/health    # -> {"ok":true}, kein Cert-Fehler
+curl -i https://api.koro.chat/health         # -> {"ok":true}
+curl -i https://db.koro.chat/rest/v1/        # -> Supabase, kein Cert-Fehler
+```
+
+**4. Stack-Gesundheit prüfen:**
+
+```bash
+cd /opt/koro-api
+docker compose -f deploy/docker-compose.api.yml ps        # blue + green "healthy"?
+docker logs koro-api-blue  2>&1 | grep ws-bus             # "[ws-bus] subscribed (instance=blue)"
+docker logs koro-api-green 2>&1 | grep ws-bus             # dito green
+```
+
+Erst wenn alles grün ist → weiter mit Schritt 5.
+
+---
+
 ## 5. Zero-Downtime-Deploy bei Git-Änderungen (Cron-Polling)
 
 `deploy/deploy.sh` prüft per `git fetch`, baut bei Änderung das Image **einmal**
