@@ -5,6 +5,7 @@ const { notFound, ok, serverError } = require('./util/response');
 const { authenticate, requireAdmin, optionalAuthenticate } = require('./auth/middleware');
 const { counter, httpResponse, observe } = require('./util/metrics');
 const logger = require('./util/logger');
+const lifecycle = require('./util/lifecycle');
 
 // Route modules
 const otp = require('./auth/otp');
@@ -81,7 +82,16 @@ function r(method, pattern, handler, opts = {}) {
 }
 
 // --- Health ---
-r('GET', '/health', async (req, res) => ok(res, { ok: true }), { auth: false });
+// Returns 503 while the process is draining so Traefik deregisters this
+// instance before we close live WebSocket sockets (zero-downtime rolling
+// deploys). Healthy => 200.
+r('GET', '/health', async (req, res) => {
+  if (lifecycle.isDraining()) {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ ok: false, draining: true }));
+  }
+  return ok(res, { ok: true });
+}, { auth: false });
 
 // --- Auth ---
 r('POST', '/auth/request-otp', otp.requestOtp, { auth: false });

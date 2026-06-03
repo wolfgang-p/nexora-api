@@ -1,0 +1,30 @@
+# Reverse-proxy stack (Traefik). Independent of every other stack.
+# Start:   docker compose -f deploy/docker-compose.proxy.yml up -d
+# Reload:  docker compose -f deploy/docker-compose.proxy.yml up -d   (only this container)
+name: proxy
+
+services:
+  traefik:
+    image: traefik:v3.3
+    container_name: traefik
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "3001:3001"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - letsencrypt:/letsencrypt
+    networks:
+      - edge
+
+volumes:
+  letsencrypt:
+
+# The shared network every public-facing service joins. Created once, by hand:
+#   docker network create edge
+networks:
+  edge:
+    external: true

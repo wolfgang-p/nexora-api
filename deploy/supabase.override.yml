@@ -1,0 +1,50 @@
+# Drop this file into the official supabase/docker directory as
+# `docker-compose.override.yml` (Compose auto-merges it).
+#
+# It does two things:
+#   1. Puts the Kong gateway on the shared `edge` network so koro-api can
+#      reach it at  http://supabase-kong:8000  (internal only — never public).
+#   2. (Optional) exposes Supabase Studio at https://studio.koro.chat through
+#      Traefik, protected by HTTP basic auth. Comment the studio block out if
+#      you prefer to reach Studio only via an SSH tunnel.
+services:
+  kong:
+    networks:
+      - default
+      - edge
+    # Expose the Supabase API gateway publicly at https://db.koro.chat.
+    # (koro-api itself talks to it INTERNALLY via http://supabase-kong:8000 —
+    # no proxy hop, no TLS overhead. This public route is for the mobile/web
+    # clients and external tooling.) Access is gated by anon/service keys + RLS,
+    # exactly like Supabase Cloud's public project URL.
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - "traefik.http.routers.supabase.rule=Host(`db.koro.chat`)"
+      - traefik.http.routers.supabase.entrypoints=websecure
+      - traefik.http.routers.supabase.tls=true
+      - traefik.http.routers.supabase.tls.certresolver=le
+      - traefik.http.services.supabase.loadbalancer.server.port=8000
+
+  # ── OPTIONAL: Studio behind Traefik + basic auth ──────────────────────
+  # Generate the auth string once:
+  #   docker run --rm httpd:alpine htpasswd -nbB admin 'YOUR_PASSWORD'
+  # then paste it into the users= label below (escape every $ as $$).
+  studio:
+    networks:
+      - default
+      - edge
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=edge
+      - "traefik.http.routers.studio.rule=Host(`studio.koro.chat`)"
+      - traefik.http.routers.studio.entrypoints=websecure
+      - traefik.http.routers.studio.tls=true
+      - traefik.http.routers.studio.tls.certresolver=le
+      - traefik.http.services.studio.loadbalancer.server.port=3000
+      - traefik.http.routers.studio.middlewares=studio-auth
+      - "traefik.http.middlewares.studio-auth.basicauth.users=admin:$$2y$$05$$REPLACE_WITH_HTPASSWD_HASH"
+
+networks:
+  edge:
+    external: true

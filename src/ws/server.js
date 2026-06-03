@@ -3,12 +3,16 @@
 const { WebSocketServer } = require('ws');
 const { verifyAccess } = require('../auth/jwt');
 const { supabase } = require('../db/supabase');
-const { register, unregister, sendTo } = require('./dispatch');
+const { register, unregister, sendTo, startBus } = require('./dispatch');
 const { route } = require('./router');
 
 const AUTH_TIMEOUT_MS = 5_000;
 
 function attachWsServer(httpServer) {
+  // Bring up the Redis fan-out bus (no-op when REDIS_URL is unset, i.e.
+  // single-instance mode). Lets sockets on other instances receive signaling.
+  startBus();
+
   const wss = new WebSocketServer({ noServer: true });
 
   httpServer.on('upgrade', (req, socket, head) => {

@@ -1,0 +1,52 @@
+# Traefik static configuration.
+# Reverse proxy + automatic Let's Encrypt for *.koro.chat.
+# New services register themselves via Docker labels — no Traefik restart needed.
+
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+entryPoints:
+  # :80 — only used for the ACME HTTP-01 challenge and a redirect to HTTPS.
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  # :443 — standard HTTPS.
+  websecure:
+    address: ":443"
+  # :3001 — keeps the legacy URL https://api.koro.chat:3001 working.
+  api3001:
+    address: ":3001"
+
+providers:
+  # Auto-discover containers on the shared `edge` network that carry
+  # `traefik.enable=true` labels. This is what lets you add new services
+  # later without touching or restarting Traefik.
+  docker:
+    exposedByDefault: false
+    network: edge
+    watch: true
+  # File provider for TLS hardening options (see dynamic/tls.yml).
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+
+certificatesResolvers:
+  le:
+    acme:
+      email: office@nexoro.net
+      storage: /letsencrypt/acme.json
+      httpChallenge:
+        entryPoint: web
+
+# Dashboard stays off — nothing routes to it, so it is not publicly reachable.
+api:
+  dashboard: false
+
+log:
+  level: INFO
+accessLog: {}

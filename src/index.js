@@ -5,8 +5,12 @@ const fs = require('node:fs');
 const config = require('./config');
 const { handleRequest } = require('./router');
 const { attachWsServer } = require('./ws/server');
+const { drainLocalSockets, stopBus } = require('./ws/dispatch');
+const lifecycle = require('./util/lifecycle');
 const webhookWorker = require('./webhooks/worker');
 const scheduler = require('./scheduler');
+
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
 process.on('unhandledRejection', (err) => console.error('[unhandledRejection]', err));
 process.on('uncaughtException', (err) => console.error('[uncaughtException]', err));
@@ -56,12 +60,36 @@ server.listen(config.port, '0.0.0.0', () => {
   scheduler.start();
 });
 
-function shutdown(sig) {
-  console.log(`[koro-api] ${sig}; shutting down`);
+// Graceful, zero-downtime-friendly shutdown:
+//  1. Flip /health to 503 so Traefik stops routing NEW traffic here.
+//  2. Wait drainDelayMs for the load balancer to deregister us.
+//  3. Close live WS sockets so clients reconnect to the healthy instance
+//     (active calls keep flowing — media is P2P/TURN, not via this server).
+//  4. Tear down the Redis bus + HTTP server, then exit.
+let shuttingDown = false;
+async function shutdown(sig) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[koro-api] ${sig}; draining (health -> 503, instance=${config.instanceId})`);
+  lifecycle.setDraining(true);
+
+  const hard = setTimeout(() => {
+    console.error('[koro-api] shutdown timeout — forcing exit');
+    process.exit(1);
+  }, config.shutdownTimeoutMs);
+  hard.unref();
+
   webhookWorker.stop();
   scheduler.stop();
-  server.close(() => process.exit(0));
-  setTimeout(() => process.exit(1), 10_000).unref();
+
+  await sleep(config.drainDelayMs);
+
+  const closed = drainLocalSockets();
+  console.log(`[koro-api] drained ${closed} ws socket(s)`);
+
+  await stopBus();
+
+  server.close(() => { clearTimeout(hard); process.exit(0); });
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));

@@ -1,0 +1,15 @@
+node_modules
+npm-debug.log*
+.git
+.gitignore
+.env
+.env.*
+uploads
+logs
+*.log
+.DS_Store
+.claude
+.windsurf
+deploy
+scripts/.peer-state.json
+*.md

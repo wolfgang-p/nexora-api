@@ -1,0 +1,94 @@
+# koro-api stack — HIGH AVAILABILITY.
+#
+# Two identical instances (blue + green) + a Redis bus. Traefik load-balances
+# across both and health-checks each, so rolling one instance never drops the
+# service. Redis fans WS signaling out across both processes (a device on
+# `green` still receives an offer sent via `blue`).
+#
+#   First start:  docker compose -f deploy/docker-compose.api.yml up -d --build
+#   Rolling update (zero downtime):  ./deploy/deploy.sh   (or run manually,
+#       see that script — it recreates blue, waits healthy, then green)
+name: koro-api
+
+# Shared definition for both app instances. Only INSTANCE_ID + container_name
+# differ (set per service below).
+x-api-common: &api-common
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  image: koro-api:latest
+  restart: unless-stopped
+  env_file:
+    - ../.env
+  volumes:
+    - koro-uploads:/app/uploads
+  networks:
+    - edge
+  depends_on:
+    - redis
+  # Give graceful shutdown room: drain delay (5s) + in-flight close, well
+  # under this SIGKILL deadline.
+  stop_grace_period: 25s
+  labels:
+    - traefik.enable=true
+    - traefik.docker.network=edge
+    # Both instances declare the SAME router + service -> Traefik merges them
+    # into one load-balanced pool with two servers.
+    - "traefik.http.routers.koro.rule=Host(`api.koro.chat`)"
+    - traefik.http.routers.koro.entrypoints=websecure,api3001
+    - traefik.http.routers.koro.tls=true
+    - traefik.http.routers.koro.tls.certresolver=le
+    - traefik.http.services.koro.loadbalancer.server.port=3001
+    # Active health check: a draining/restarting instance returns 503 on
+    # /health and Traefik routes around it within ~3s.
+    - traefik.http.services.koro.loadbalancer.healthcheck.path=/health
+    - traefik.http.services.koro.loadbalancer.healthcheck.interval=3s
+    - traefik.http.services.koro.loadbalancer.healthcheck.timeout=2s
+    # Sticky sessions (browser/koro-meet): keep a client on one instance to
+    # minimise reconnect churn. Correctness across instances is guaranteed by
+    # Redis regardless of stickiness.
+    - traefik.http.services.koro.loadbalancer.sticky.cookie=true
+    - traefik.http.services.koro.loadbalancer.sticky.cookie.name=koro_lb
+
+x-api-env: &api-env
+  NODE_ENV: production
+  PORT: "3001"
+  # Force HTTP inside the container — Traefik owns TLS. index.js falls back to
+  # HTTP when no certs exist at CERT_DIR.
+  CERT_DIR: /nonexistent
+  # Shared WS fan-out bus.
+  REDIS_URL: redis://redis:6379
+  # Keep serving (health=503) this long before closing sockets on shutdown,
+  # so Traefik deregisters us first.
+  DRAIN_DELAY_MS: "5000"
+
+services:
+  api-blue:
+    <<: *api-common
+    container_name: koro-api-blue
+    environment:
+      <<: *api-env
+      INSTANCE_ID: blue
+
+  api-green:
+    <<: *api-common
+    container_name: koro-api-green
+    environment:
+      <<: *api-env
+      INSTANCE_ID: green
+
+  redis:
+    image: redis:7-alpine
+    container_name: koro-redis
+    restart: unless-stopped
+    # Pure transient pub/sub + presence — no persistence needed.
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    networks:
+      - edge
+
+volumes:
+  koro-uploads:
+
+networks:
+  edge:
+    external: true

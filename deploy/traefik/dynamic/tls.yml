@@ -1,0 +1,6 @@
+# TLS hardening — applied to every HTTPS router by default.
+tls:
+  options:
+    default:
+      minVersion: VersionTLS12
+      sniStrict: false

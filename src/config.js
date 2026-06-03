@@ -1,5 +1,7 @@
 'use strict';
 
+const os = require('node:os');
+
 require('dotenv').config();
 
 function required(name) {
@@ -28,6 +30,21 @@ module.exports = {
   isProd,
   port: int('PORT', 3001),
   corsOrigins: list('CORS_ORIGINS'),
+
+  // ── Multi-instance / HA ────────────────────────────────────────────
+  // When REDIS_URL is set, the WS dispatch fans out across every process
+  // through Redis pub/sub so a device connected to instance B still
+  // receives signaling sent from instance A. Unset => single-instance,
+  // behaves exactly as before (local-only registry).
+  redisUrl: process.env.REDIS_URL || null,
+  // Stable id for this process, used to suppress self-echo on the bus and
+  // to tag presence. docker-compose sets INSTANCE_ID=blue|green.
+  instanceId: process.env.INSTANCE_ID || os.hostname(),
+  // Graceful shutdown: how long to keep serving (health=503 so the load
+  // balancer deregisters us) before we close live WS sockets, and the hard
+  // ceiling after which we force-exit.
+  drainDelayMs: int('DRAIN_DELAY_MS', 5000),
+  shutdownTimeoutMs: int('SHUTDOWN_TIMEOUT_MS', 15000),
 
   supabase: {
     url: required('SUPABASE_URL'),
