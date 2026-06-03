@@ -8,8 +8,9 @@
 #   DST_DB_URL="postgresql://postgres:<pw>@localhost:5432/postgres" \
 #   ./deploy/migrate-schema.sh
 #
-# Requires the postgresql client tools (pg_dump / psql) matching the server
-# major version. On the new box:  apt-get install -y postgresql-client-15
+# Requires the postgresql client tools (pg_dump / psql). A client >= the server
+# major version works for both dump and restore.
+#   Ubuntu 24.04 (Noble):  apt-get install -y postgresql-client-16
 set -euo pipefail
 
 : "${SRC_DB_URL:?set SRC_DB_URL to the OLD (cloud) connection string}"

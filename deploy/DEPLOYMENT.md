@@ -67,7 +67,9 @@ Sekundenbruchteilen zur gesunden Instanz (Failover über Traefik-Healthcheck).
 ```bash
 curl -fsSL https://get.docker.com | sh
 docker compose version                       # v2 erforderlich
-apt-get update && apt-get install -y git postgresql-client-15
+apt-get update && apt-get install -y git postgresql-client-16
+# Hinweis: Ubuntu 24.04 (Noble) hat KEIN postgresql-client-15 mehr — Version 16
+# ist korrekt (neuerer Client dumpt/restored die PG15-DB von Supabase problemlos).
 
 sudo mkdir -p /opt/koro-api && sudo chown "$USER" /opt/koro-api
 git clone <DEIN_REPO_URL> /opt/koro-api
