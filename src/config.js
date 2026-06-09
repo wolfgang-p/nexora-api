@@ -6,7 +6,7 @@ require('dotenv').config();
 
 function required(name) {
   const v = process.env[name];
-  if (!v) throw new Error(`Missing required env var: ${name}`);
+  if (!v) throw new Error(`Missing required dotenv var: ${name}`);
   return v;
 }
 
