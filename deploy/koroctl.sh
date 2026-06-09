@@ -90,6 +90,25 @@ wait_db_healthy() {
   done
 }
 
+wait_kong_up() {
+  # Kong hängt in Supabase an "analytics (healthy)". Kommt es beim ersten up -d
+  # nicht hoch, ist meist analytics noch nicht gesund -> up -d gezielt
+  # wiederholen, bis Kong läuft (statt es unbemerkt "exited" zu lassen).
+  local attempt=0 max=6 st
+  while [ "$attempt" -lt "$max" ]; do
+    st="$(state_of supabase-kong)"
+    [ "$st" = "running" ] && { ok "supabase-kong läuft"; return 0; }
+    info "supabase-kong noch nicht oben (status=$st) — erneuter up -d (Versuch $((attempt+1))/$max, wartet auf analytics) …"
+    ( cd "$SUPABASE_STACK" && $SB_COMPOSE up -d ) >>"$CTL_LOG" 2>&1
+    sleep 10; attempt=$((attempt+1))
+  done
+  st="$(state_of supabase-kong)"
+  [ "$st" = "running" ] && { ok "supabase-kong läuft"; return 0; }
+  err "supabase-kong kam nach $max Versuchen nicht hoch (status=$st). Letzte Logs:"
+  docker logs --tail 20 supabase-kong 2>&1 | sed 's/^/      /'
+  return 1
+}
+
 wait_api_healthy() {
   local c="$1" w=0 s
   info "warte bis $c healthy …"
@@ -126,7 +145,8 @@ do_start() {
     ( cd "$SUPABASE_STACK" && $SB_COMPOSE up -d db ) >>"$CTL_LOG" 2>&1 && ok "supabase-db gestartet" || warn "supabase-db Start meldete Fehler"
     wait_db_healthy
     info "starte restlichen Supabase-Stack …"
-    ( cd "$SUPABASE_STACK" && $SB_COMPOSE up -d ) >>"$CTL_LOG" 2>&1 && ok "Supabase-Stack oben" || warn "Supabase-Stack Start meldete Fehler"
+    ( cd "$SUPABASE_STACK" && $SB_COMPOSE up -d ) >>"$CTL_LOG" 2>&1 && ok "Supabase up -d ausgeführt" || warn "Supabase up -d meldete Fehler"
+    wait_kong_up        # Kong/analytics-Timing abfangen, sonst bleibt Kong "exited"
     ensure_on_edge supabase-kong
     ensure_on_edge supabase-studio
   else
@@ -209,8 +229,15 @@ do_status_brief() {
 do_status() {
   phase "STATUS  $(now)"
 
-  phase "Container"
+  phase "Kern-Container (Kurzüberblick)"
   do_status_brief
+
+  phase "Supabase — vollständiger ps (alle Dienste)"
+  if [ -d "$SUPABASE_STACK" ]; then
+    ( cd "$SUPABASE_STACK" && $SB_COMPOSE ps ) 2>/dev/null | sed 's/^/      /'
+  else
+    warn "kein Supabase-Stack unter $SUPABASE_STACK"
+  fi
 
   phase "edge-Netzwerk"
   if docker network inspect edge >/dev/null 2>&1; then
