@@ -82,7 +82,16 @@ async function revokeDevice(req, res, { params }) {
 }
 
 /**
- * PUT /devices/:id   (self)  { label?, location_hint? }
+ * PUT /devices/:id   (self)  { label?, location_hint?, identity_public_key? }
+ *
+ * `identity_public_key` lets a device re-key itself onto the user's stable
+ * identity key after a passphrase-backup restore: at login the device first
+ * registers a fresh local key, then — once the backup is restored and the
+ * shared user key adopted — it calls this to advertise the user key so peers
+ * encrypt to it and its own fanout rows become decryptable. The fingerprint is
+ * re-derived from the new key. Re-keying is only allowed onto a key already
+ * used by another (non-revoked) device of the same user, so a device can't be
+ * silently pointed at an attacker-chosen key.
  */
 async function updateDevice(req, res, { params }) {
   const { readJson, badRequest } = require('../util/response');
@@ -96,10 +105,37 @@ async function updateDevice(req, res, { params }) {
   const patch = {};
   if (body.label !== undefined) patch.label = body.label;
   if (body.location_hint !== undefined) patch.location_hint = body.location_hint;
+
+  if (body.identity_public_key !== undefined) {
+    const pubKeyB64 = String(body.identity_public_key || '');
+    const pubKeyBuffer = Buffer.from(pubKeyB64, 'base64');
+    if (pubKeyBuffer.length < 16 || pubKeyBuffer.length > 256) {
+      return badRequest(res, 'identity_public_key has unreasonable length');
+    }
+    // Only allow re-keying onto a key already in use by one of this user's own
+    // devices (revoked ones count — their rows persist and back the history
+    // fallback) — i.e. the established user identity key recovered from the
+    // passphrase backup. Prevents pointing a device at an arbitrary key.
+    const { data: peer } = await supabase
+      .from('devices')
+      .select('id')
+      .eq('user_id', req.auth.userId)
+      .eq('identity_public_key', pubKeyB64)
+      .neq('id', params.id)
+      .limit(1)
+      .maybeSingle();
+    if (!peer) {
+      return badRequest(res, 'identity_public_key must match an existing device of this user');
+    }
+    const { deviceFingerprint } = require('../util/crypto');
+    patch.identity_public_key = pubKeyB64;
+    patch.fingerprint = deviceFingerprint(pubKeyBuffer);
+  }
+
   if (Object.keys(patch).length === 0) return ok(res, { ok: true });
 
   await supabase.from('devices').update(patch).eq('id', params.id);
-  ok(res, { ok: true });
+  ok(res, { ok: true, fingerprint: patch.fingerprint });
 }
 
 /**

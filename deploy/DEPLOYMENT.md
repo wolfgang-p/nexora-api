@@ -9,6 +9,30 @@ Redis-Bus · selbstgehostetes Supabase (öffentlich unter `db.koro.chat`).
 
 ---
 
+## Schnellstart — alles automatisch (`deploy/install.sh`)
+
+Statt die Schritte unten von Hand abzuarbeiten gibt es ein One-Shot-Script,
+das **alles hintereinander** erledigt: Docker + Tools installieren, `edge`-Netz
+anlegen, Traefik starten, Supabase selbst hosten (Secrets generieren,
+`ANON_KEY`/`SERVICE_ROLE_KEY` aus dem `JWT_SECRET` signieren, `.env` schreiben),
+das Schema per `migrations/0001 … 0025` **nacheinander** anlegen, die koro-api
+`.env` bauen (Supabase-Werte automatisch, der Rest interaktiv abgefragt) und
+zuletzt blue + green + Redis bauen & starten.
+
+```bash
+git clone <DEIN_REPO_URL> /opt/koro-api
+cd /opt/koro-api
+sudo ./deploy/install.sh
+```
+
+Das Script gibt **saubere Status-Logs** aus (Schritte, ✓/✗, Warnungen); das
+Paket-/Build-Rauschen landet in `/var/log/koro-install-<ts>.log`. Generierte
+Secrets werden zusätzlich in `deploy/.install-credentials` (chmod 600)
+gesichert. Die ausführliche, manuelle Anleitung mit allen Hintergründen steht
+weiterhin unten.
+
+---
+
 ## Warum 2 Instanzen + Redis (kurz, aber wichtig)
 
 Der WS-Dispatch hielt Verbindungen bisher **prozess-lokal**. Zwei Instanzen

@@ -80,15 +80,41 @@ Each device has a WS connection. On new `message_recipients` row for this device
 3. Client acknowledges → server sets `delivered_at`.
 4. Client later calls `/messages/:id/read` → server sets `read_at`.
 
-### 2.3 Adding a new device later
+### 2.3 Adding a new device later — stable user identity key
 
-Critical: **past messages were never encrypted for a device that didn't exist yet.** The new device can only read messages from enrollment forward.
+The naive per-device-key model has a sharp edge: **past messages were never
+encrypted for a device that didn't exist yet**, so a freshly enrolled device
+(new browser, reinstall, re-login) couldn't read history. This was the source
+of the "history doesn't load after re-login / on web" bug.
 
-Two workarounds:
-- **Live sync** — QR pairing transfers the user's identity key so the new device can negotiate forward. Past messages remain unreadable on that device. (Signal behaves this way.)
-- **Encrypted backup** — out of scope for v1. If we ever add it, it would be a user-key-wrapped archive stored in Supabase Storage that a new device can pull after QR verification.
+**Resolution (implemented): one stable identity key per *user*, not per device.**
+The first device's keypair becomes the user's long-term identity key. Every
+later device of the same user adopts that same key, so:
 
-For Koro v1 we ship "live sync only". The UI should tell the user this.
+- A device that wasn't a recipient of an old message still decrypts it via the
+  **sibling-device fallback** in `list.js` (the server returns another of the
+  user's device copies), because all the user's devices share one secret.
+- Re-login / reinstall recovers the same key, so history survives.
+
+How a new device gets the key — two paths, both zero-knowledge:
+
+- **QR pairing (live)** — an existing device wraps the user secret to the new
+  device's ephemeral key (`pairing_sessions.device_secret_*`).
+- **Passphrase backup (`key_backups`)** — the user secret is wrapped with a key
+  derived from a recovery passphrase (PBKDF2-HMAC-SHA512, see clients' `kdf`)
+  and stored as an opaque blob. `GET/PUT/DELETE /keys/backup`. On a new device
+  the user enters the passphrase; the client **adopts** the recovered key as its
+  primary keypair and calls `PUT /devices/:id { identity_public_key }` to
+  re-register onto it (the server only allows re-keying onto a key already used
+  by another device of the same user). After this the device advertises the user
+  key, peers seal to it, and both history and new messages decrypt.
+
+Clients **force** the backup setup / restore right after login (the "identity
+gate") — it cannot be skipped, so a device never silently runs without the user
+key. The only escape is an explicit, confirmation-gated "forgot passphrase"
+reset that sets a NEW passphrase (overwriting the backup) and forfeits history
+recoverable only with the old one. The passphrase never reaches the server —
+lose it and that history is unrecoverable, exactly like Signal's recovery PIN.
 
 ### 2.4 Revoking a device
 

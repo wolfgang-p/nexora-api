@@ -4,11 +4,11 @@
     "type": "split",
     "children": [
       {
-        "id": "eaf2bb590851bd9b",
+        "id": "c3a5da7bcda5bb85",
         "type": "tabs",
         "children": [
           {
-            "id": "acdd690df4c1755b",
+            "id": "66f74212284980e1",
             "type": "leaf",
             "state": {
               "type": "markdown",
@@ -183,9 +183,13 @@
       "bases:Neue Base erstellen": false
     }
   },
-  "active": "acdd690df4c1755b",
+  "active": "66f74212284980e1",
   "lastOpenFiles": [
+    "deploy/install.sh",
+    "meeting.md",
+    "CLAUDE.md",
+    "deploy/DEPLOYMENT.md",
     "ARCHITECTURE.md",
-    "deploy/DEPLOYMENT.md"
+    "uploads/2026/04/5bb2607f-a26b-4cc8-bed5-410ee9df95f9.jpg"
   ]
 }
