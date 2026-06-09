@@ -167,8 +167,18 @@ else
 fi
 
 run "Paketindex aktualisieren" apt-get update
-run "git + postgresql-client-16 installieren" apt-get install -y git postgresql-client-16
-ok "Basis-Pakete bereit"
+run "git installieren" apt-get install -y git
+# psql-Client ist OPTIONAL: die Migrationen laufen via `docker exec supabase-db psql`.
+# Paketname variiert je nach Ubuntu-Release (24.04→16, 25.04→17), darum mit
+# Fallbacks und ohne harten Abbruch.
+if apt-get install -y postgresql-client-16 >>"$LOGFILE" 2>&1 \
+   || apt-get install -y postgresql-client-17 >>"$LOGFILE" 2>&1 \
+   || apt-get install -y postgresql-client    >>"$LOGFILE" 2>&1; then
+  ok "git + postgresql-client installiert"
+else
+  warn "postgresql-client nicht installierbar — unkritisch, Migrationen laufen via docker exec."
+  ok "git installiert"
+fi
 
 run "Verzeichnis /opt/koro-api vorbereiten" mkdir -p /opt/koro-api
 
