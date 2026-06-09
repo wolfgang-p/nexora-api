@@ -56,7 +56,9 @@ git pull --ff-only origin "$BRANCH"
 export GIT_COMMIT="$(git rev-parse --short HEAD)"
 export GIT_COMMITTED_AT="$(git show -s --format=%cI HEAD)"
 log "building image @ $GIT_COMMIT"
-$COMPOSE build
+# blue + green teilen koro-api:latest -> nur EINEN Service bauen, sonst rennt der
+# parallele Export beider Targets in: image "...koro-api:latest": already exists
+$COMPOSE build api-blue
 
 # ── 3. Make sure redis is up, then roll instances one by one ───────────
 $COMPOSE up -d --no-deps redis

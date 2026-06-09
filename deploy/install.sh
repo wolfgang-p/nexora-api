@@ -105,18 +105,17 @@ gen_supabase_jwt() {
 }
 
 # Interaktive Abfrage. Prompts → stderr, Wert → stdout (für $(ask …)).
+# Eingabe ist sichtbar (Server-Konsole, eigene Maschine) — das vermeidet das
+# "ich kann nichts tippen"-Gefühl bei versteckten Feldern. Liest robust von
+# /dev/tty und bricht bei EOF nicht das ganze Script ab.
 ask() {
-  local key="$1" desc="$2" mode="${3:-}" val
+  local key="$1" desc="$2" val=""
   {
     printf '\n  %s%s%s\n' "${C_CYAN}${C_BOLD}" "$key" "${C_RESET}"
     printf '  %s%s%s\n' "${C_DIM}" "$desc" "${C_RESET}"
     printf '  %s(Enter = überspringen / leer lassen)%s\n' "${C_DIM}" "${C_RESET}"
   } >&2
-  if [ "$mode" = secret ]; then
-    read -rs -p "  > " val </dev/tty; echo >&2
-  else
-    read -r  -p "  > " val </dev/tty
-  fi
+  read -r -p "  > " val </dev/tty || val=""
   printf '%s' "$val"
 }
 
@@ -124,6 +123,22 @@ require_root() {
   if [ "$(id -u)" -ne 0 ]; then
     err "Bitte als root ausführen:  sudo ./deploy/install.sh"
     exit 1
+  fi
+}
+
+# Garantiert, dass ein Container am `edge`-Netz hängt. Der Supabase-Override
+# SOLL Kong ans edge-Netz hängen, aber der networks-Merge ist je nach
+# Compose-Version unzuverlässig. koro-api erreicht Supabase aber NUR über edge
+# (http://supabase-kong:8000) — darum hier deterministisch nachziehen.
+ensure_on_edge() {
+  local cname="$1"
+  docker inspect "$cname" >/dev/null 2>&1 || return 0   # Container existiert nicht (z.B. Studio aus)
+  if docker inspect -f '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$cname" 2>/dev/null | grep -qw edge; then
+    ok "$cname ist bereits am edge-Netz"
+  elif docker network connect edge "$cname" >>"$LOGFILE" 2>&1; then
+    ok "$cname ans edge-Netz gehängt"
+  else
+    warn "$cname konnte nicht ans edge-Netz gehängt werden — siehe $LOGFILE"
   fi
 }
 
@@ -280,9 +295,22 @@ PY
   fi
 fi
 
-run_sh "Supabase-Stack starten (docker compose up -d)" \
-    "cd '$SUPABASE_STACK' && docker compose up -d"
+# WICHTIG: Override explizit per -f laden. Das Auto-Mergen von
+# docker-compose.override.yml greift NICHT zuverlässig (z. B. wenn COMPOSE_FILE
+# in der Supabase-.env gesetzt ist) — dann fehlen Kong/Studio die Traefik-Labels
+# und das edge-Netz. Mit explizitem -f ist der Override garantiert aktiv.
+SB_COMPOSE="docker compose -f docker-compose.yml -f docker-compose.override.yml"
+if [ ! -f "$SUPABASE_STACK/docker-compose.override.yml" ]; then
+  SB_COMPOSE="docker compose"   # Fallback, falls (warum auch immer) kein Override da ist
+fi
+run_sh "Supabase-Stack starten (mit Override)" \
+    "cd '$SUPABASE_STACK' && $SB_COMPOSE up -d"
 ok "Supabase-Container gestartet"
+
+# Kong (Pflicht) + Studio (optional) deterministisch ans edge-Netz hängen,
+# damit koro-api Supabase intern unter http://supabase-kong:8000 auflöst.
+ensure_on_edge supabase-kong
+ensure_on_edge supabase-studio
 
 info "Warte auf Postgres (supabase-db) …"
 WAITED=0
@@ -416,8 +444,14 @@ ok ".env geschrieben (REDIS_URL/INSTANCE_ID/CERT_DIR/DRAIN_DELAY_MS kommen aus d
 # =============================================================================
 step "koro-api starten (blue + green + redis, mit Build)"
 # =============================================================================
-run_sh "Images bauen & Stack starten" \
-    "cd '$REPO_DIR' && docker compose -f deploy/docker-compose.api.yml up -d --build"
+# blue + green teilen sich dasselbe Image (koro-api:latest). Darum NUR EINMAL
+# bauen (über einen Service) — sonst exportieren beide parallel auf denselben
+# Tag und der containerd/buildx-Exporter scheitert mit:
+#   image "…/koro-api:latest": already exists
+run_sh "Image bauen (einmalig, koro-api:latest)" \
+    "cd '$REPO_DIR' && docker compose -f deploy/docker-compose.api.yml build api-blue"
+run_sh "Stack starten (blue + green + redis)" \
+    "cd '$REPO_DIR' && docker compose -f deploy/docker-compose.api.yml up -d"
 ok "Build & Start abgeschlossen"
 
 info "Warte bis blue + green 'healthy' sind …"

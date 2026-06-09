@@ -31,6 +31,8 @@ Secrets werden zusätzlich in `deploy/.install-credentials` (chmod 600)
 gesichert. Die ausführliche, manuelle Anleitung mit allen Hintergründen steht
 weiterhin unten.
 
+
+
 ---
 
 ## Warum 2 Instanzen + Redis (kurz, aber wichtig)

@@ -185,6 +185,7 @@
   },
   "active": "66f74212284980e1",
   "lastOpenFiles": [
+    "deploy/uninstall.sh",
     "deploy/install.sh",
     "meeting.md",
     "CLAUDE.md",
