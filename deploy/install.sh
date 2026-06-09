@@ -304,22 +304,36 @@ MIGRATIONS=( "$REPO_DIR"/migrations/0[0-9][0-9][0-9]_*.sql )
 shopt -u nullglob
 IFS=$'\n' MIGRATIONS=($(sort <<<"${MIGRATIONS[*]}")); unset IFS
 
+# Einzelne Migrationen überspringen (Leerzeichen-getrennt, per ENV override-bar).
+# 0002 hat auf einer frischen DB einen Reihenfolge-Bug (legt das `koro`-Schema
+# erst NACH der ersten Funktion an). RLS ist zudem optional, da koro-api den
+# service_role-Key nutzt (umgeht RLS) und Clients über das Backend gehen, nie
+# direkt an PostgREST.  Überschreiben:  SKIP_MIGRATIONS="" ./deploy/install.sh
+SKIP_MIGRATIONS="${SKIP_MIGRATIONS-0002_rls_policies.sql}"
+
 info "${#MIGRATIONS[@]} Migrationsdateien gefunden"
-APPLIED=0
+if [ -n "$SKIP_MIGRATIONS" ]; then warn "Wird übersprungen: $SKIP_MIGRATIONS"; fi
+APPLIED=0; SKIPPED=0; FAILED=0; FAILS=""
 for f in "${MIGRATIONS[@]}"; do
   name="$(basename "$f")"
+  if [[ " $SKIP_MIGRATIONS " == *" $name "* ]]; then
+    printf '  %s↷ %s (übersprungen)%s\n' "${C_YELLOW}" "$name" "${C_RESET}"
+    SKIPPED=$((SKIPPED+1)); continue
+  fi
   printf '  %s→ %s …%s\n' "${C_DIM}" "$name" "${C_RESET}"
   if docker exec -i -e PGPASSWORD="$POSTGRES_PASSWORD" supabase-db \
         psql -v ON_ERROR_STOP=1 -U postgres -d postgres -q <"$f" >>"$LOGFILE" 2>&1; then
     printf '\033[1A\033[2K  %s✓%s %s\n' "${C_GREEN}" "${C_RESET}" "$name"
     APPLIED=$((APPLIED+1))
   else
-    printf '\033[1A\033[2K  %s✗ %s%s\n' "${C_RED}" "$name" "${C_RESET}"
-    err "Migration fehlgeschlagen: $name — Details siehe $LOGFILE"
-    exit 1
+    # Nicht hart abbrechen: bei Re-Runs sind Objekte ggf. schon da ("already
+    # exists"). Fehler werden gesammelt und am Ende gemeldet.
+    printf '\033[1A\033[2K  %s! %s (Fehler — übersprungen, siehe Log)%s\n' "${C_YELLOW}" "$name" "${C_RESET}"
+    FAILED=$((FAILED+1)); FAILS="$FAILS $name"
   fi
 done
-ok "$APPLIED/${#MIGRATIONS[@]} Migrationen angewendet"
+ok "Migrationen: $APPLIED angewendet, $SKIPPED übersprungen, $FAILED fehlgeschlagen"
+if [ "$FAILED" -gt 0 ]; then warn "Fehlgeschlagen:$FAILS — Details im Log ($LOGFILE)"; fi
 
 run_sh "PostgREST-Schema-Cache neu laden" \
     "docker exec -e PGPASSWORD='$POSTGRES_PASSWORD' supabase-db psql -U postgres -d postgres -c \"NOTIFY pgrst, 'reload schema';\""
