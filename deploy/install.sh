@@ -303,7 +303,36 @@ SB_COMPOSE="docker compose -f docker-compose.yml -f docker-compose.override.yml"
 if [ ! -f "$SUPABASE_STACK/docker-compose.override.yml" ]; then
   SB_COMPOSE="docker compose"   # Fallback, falls (warum auch immer) kein Override da ist
 fi
-run_sh "Supabase-Stack starten (mit Override)" \
+
+# WICHTIG: Zuerst NUR die DB hochfahren und auf "healthy" warten. Die Erst-
+# Initialisierung (viele Supabase-Migrationen) kann auf langsamen Disks länger
+# dauern als das depends_on-Healthy-Timeout der anderen Container — sonst bricht
+# der volle "up" mit "container supabase-db is unhealthy" ab, obwohl die DB nur
+# noch ein paar Sekunden gebraucht hätte. DB-first vermeidet das komplett.
+run_sh "Supabase-DB starten (Erst-Init kann dauern)" \
+    "cd '$SUPABASE_STACK' && $SB_COMPOSE up -d db"
+
+info "Warte bis Postgres gesund ist (bis zu 300s — Erst-Init auf langsamer Disk) …"
+DBWAIT=0
+while true; do
+  DBSTATUS="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' supabase-db 2>/dev/null || echo missing)"
+  if [ "$DBSTATUS" = "healthy" ]; then ok "Postgres ist gesund (nach ${DBWAIT}s)"; break; fi
+  # Kein Healthcheck definiert? -> pg_isready zweimal mit Pause (Init-Temp-Server
+  # nicht als "fertig" missdeuten).
+  if [ "$DBSTATUS" = "none" ] && docker exec supabase-db pg_isready -U postgres >/dev/null 2>&1; then
+    sleep 5
+    docker exec supabase-db pg_isready -U postgres >/dev/null 2>&1 && { ok "Postgres bereit (nach ${DBWAIT}s)"; break; }
+  fi
+  if [ "$DBWAIT" -ge 300 ]; then
+    err "Postgres wurde nach 300s nicht gesund (status=$DBSTATUS)."
+    docker logs --tail 50 supabase-db >>"$LOGFILE" 2>&1 || true
+    exit 1
+  fi
+  sleep 3; DBWAIT=$((DBWAIT+3))
+done
+
+# Jetzt der restliche Stack — DB ist gesund, depends_on greift sofort.
+run_sh "Restlichen Supabase-Stack starten (mit Override)" \
     "cd '$SUPABASE_STACK' && $SB_COMPOSE up -d"
 ok "Supabase-Container gestartet"
 
@@ -311,18 +340,6 @@ ok "Supabase-Container gestartet"
 # damit koro-api Supabase intern unter http://supabase-kong:8000 auflöst.
 ensure_on_edge supabase-kong
 ensure_on_edge supabase-studio
-
-info "Warte auf Postgres (supabase-db) …"
-WAITED=0
-until docker exec supabase-db pg_isready -U postgres >/dev/null 2>&1; do
-  sleep 2; WAITED=$((WAITED+2))
-  if [ "$WAITED" -ge 180 ]; then
-    err "Postgres wurde nach 180s nicht bereit."
-    docker logs --tail 40 supabase-db >>"$LOGFILE" 2>&1 || true
-    exit 1
-  fi
-done
-ok "Postgres ist bereit (nach ${WAITED}s)"
 
 # =============================================================================
 step "DB-Schema migrieren — migrations/0001 … 0025 nacheinander"
