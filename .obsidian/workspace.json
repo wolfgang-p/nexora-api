@@ -185,6 +185,7 @@
   },
   "active": "66f74212284980e1",
   "lastOpenFiles": [
+    "deploy/koroctl.sh",
     "migrations/0026_key_backups.sql",
     "deploy/uninstall.sh",
     "deploy/install.sh",
