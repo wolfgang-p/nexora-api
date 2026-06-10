@@ -5,61 +5,19 @@ const { ok, created, badRequest, notFound, forbidden, readJson, serverError } = 
 const { broadcastToDevices, deviceOnline } = require('../ws/dispatch');
 const { pushIncomingCall } = require('../push');
 const config = require('../config');
+const { buildIceServers } = require('./ice');
 
 const RING_TIMEOUT_MS = 45 * 1000;
 
 /**
  * GET /calls/ice-servers
  * Authed — returns the ICE server list for the caller's WebRTC
- * peer-connection. Always includes STUN. TURN is added when configured:
- *   • Cloudflare Realtime (preferred) — short-lived credentials minted
- *     per request so the secret token never reaches the client.
- *   • Static username/credential (Metered/Twilio/coturn) otherwise.
- * Without any TURN, peers behind symmetric/carrier-grade NAT (mobile data)
- * can't connect — so set one of the two in production.
+ * peer-connection. STUN always, plus TURN when configured (see
+ * ./ice.js buildIceServers). Without TURN, peers behind symmetric /
+ * carrier-grade NAT (mobile data) can't connect — set one in production.
  */
 async function iceServers(req, res) {
-  const servers = config.ice.stunUrls.map((u) => ({ urls: u }));
-
-  // Preferred path: mint ephemeral Cloudflare TURN credentials.
-  if (config.ice.cfTurnKeyId && config.ice.cfTurnToken) {
-    try {
-      const cf = await fetch(
-        `https://rtc.live.cloudflare.com/v1/turn/keys/${config.ice.cfTurnKeyId}/credentials/generate-ice-servers`,
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${config.ice.cfTurnToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ ttl: config.ice.turnTtl }),
-        },
-      );
-      if (cf.ok) {
-        const data = await cf.json();
-        // Cloudflare returns iceServers as a single object (urls +
-        // username + credential); normalise to an array and append.
-        const cfServers = data && data.iceServers
-          ? (Array.isArray(data.iceServers) ? data.iceServers : [data.iceServers])
-          : [];
-        return ok(res, { ice_servers: [...servers, ...cfServers] });
-      }
-      console.warn('[calls] Cloudflare TURN mint failed:', cf.status);
-    } catch (err) {
-      console.warn('[calls] Cloudflare TURN error:', err.message || err);
-    }
-    // Fall through to static / STUN-only on failure rather than 500.
-  }
-
-  // Static TURN credentials, if configured.
-  if (config.ice.turnUrls.length > 0) {
-    servers.push({
-      urls: config.ice.turnUrls,
-      username: config.ice.turnUsername || undefined,
-      credential: config.ice.turnCredential || undefined,
-    });
-  }
-  ok(res, { ice_servers: servers });
+  ok(res, { ice_servers: await buildIceServers() });
 }
 
 /**

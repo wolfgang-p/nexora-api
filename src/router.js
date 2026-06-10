@@ -320,6 +320,7 @@ r('POST',   '/auth/recovery/verify',            recovery.verifyAndLogin,     { a
 r('POST',   '/meetings',                        meetings.create,        { auth: false, optionalAuth: true });
 r('GET',    '/meetings',                        meetings.listMine);
 r('GET',    '/meetings/:roomId',                meetings.getOne,        { auth: false });
+r('GET',    '/meetings/:roomId/ice-servers',    meetings.iceServers,    { auth: false });
 r('POST',   '/meetings/:roomId/join',           meetings.join,          { auth: false, optionalAuth: true });
 r('POST',   '/meetings/:roomId/leave',          meetings.leave,         { auth: false });
 r('PATCH',  '/meetings/:roomId',                meetings.update);

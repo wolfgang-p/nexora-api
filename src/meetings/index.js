@@ -33,6 +33,7 @@ const { supabase } = require('../db/supabase');
 const { readJson, ok, created, badRequest, forbidden, notFound, serverError } = require('../util/response');
 const { audit } = require('../util/audit');
 const { plan, ensureDir } = require('../media/fs');
+const { buildIceServers } = require('../calls/ice');
 
 // Max PDF size that a meeting host can pin. 25 MB is enough for a
 // typical slide deck but small enough to keep the streaming write
@@ -235,6 +236,24 @@ async function getOne(req, res, { params }) {
     .order('joined_at', { ascending: true });
 
   ok(res, { meeting, participants: participants || [] });
+}
+
+/**
+ * GET /meetings/:roomId/ice-servers   (NO auth — koro-meet guests included)
+ *
+ * Returns the ICE/TURN server list for a meeting participant. koro-meet
+ * allows guests (no Bearer token), so the authed /calls/ice-servers is not
+ * reachable for them — without TURN they can't connect over mobile/CGNAT.
+ *
+ * Bound to an EXISTING, non-ended meeting so the (cost-bearing) Cloudflare
+ * TURN minting can't be abused by arbitrary callers. Same list shape as
+ * /calls/ice-servers: { ice_servers: [...] }.
+ */
+async function iceServers(req, res, { params }) {
+  const { data: meeting } = await supabase.from('meetings')
+    .select('id, ended_at').eq('room_id', params.roomId).maybeSingle();
+  if (!meeting || meeting.ended_at) return notFound(res, 'Meeting not found');
+  ok(res, { ice_servers: await buildIceServers() });
 }
 
 async function join(req, res, { params }) {
@@ -862,7 +881,7 @@ async function uploadPdf(req, res, { params }) {
 }
 
 module.exports = {
-  create, listMine, getOne, join, leave, update, destroy,
+  create, listMine, getOne, iceServers, join, leave, update, destroy,
   listMessages, postMessage,
   startNow, kickParticipant, setPdf, clearPdf, uploadPdf, endMeeting,
 };
