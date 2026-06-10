@@ -23,6 +23,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { execFile } = require('node:child_process');
 const { monitorEventLoopDelay } = require('node:perf_hooks');
+const v8 = require('node:v8');
 
 const config = require('../config');
 const { getBusClient, wsStats } = require('../ws/dispatch');
@@ -87,7 +88,10 @@ function collectLocal() {
     node: process.version,
     platform: `${os.platform()} ${os.release()} ${os.arch()}`,
     ws: wsStats(),
-    mem: { rss: mem.rss, heapUsed: mem.heapUsed, heapTotal: mem.heapTotal, external: mem.external },
+    // heapTotal = aktuell von V8 reservierter Heap (wächst bei Bedarf);
+    // heapLimit = das ECHTE Maximum (V8 heap_size_limit, ~max-old-space-size).
+    // Für die Auslastung zählt heapUsed/heapLimit, NICHT heapUsed/heapTotal.
+    mem: { rss: mem.rss, heapUsed: mem.heapUsed, heapTotal: mem.heapTotal, heapLimit: v8.getHeapStatistics().heap_size_limit, external: mem.external },
     procCpuPct,
     eventLoopLagMs: {
       mean: loopDelay.mean / 1e6,
@@ -426,13 +430,17 @@ function render(d){
   // Instance detail
   $('instances').innerHTML=insts.map(i=>{
     const stale=(Date.now()-i.ts)>20000;
-    const heapPct=i.mem.heapUsed/i.mem.heapTotal*100;
+    // Auslastung am ECHTEN V8-Limit messen (heapLimit), nicht am aktuell
+    // reservierten heapTotal — sonst zeigt der Balken dauernd ~100 %, obwohl
+    // massig Luft ist. Fallback auf heapTotal für alte Snapshots ohne heapLimit.
+    const heapMax=i.mem.heapLimit||i.mem.heapTotal;
+    const heapPct=i.mem.heapUsed/heapMax*100;
     return '<div class="card2 card" style="background:var(--card2)">'+
       '<h2 style="color:var(--tx)"><span class="dot '+(stale?'err':'ok')+'"></span> '+esc(i.instance)+' <span class="tag mono">'+esc((i.version||'').slice(0,7))+'</span></h2>'+
       kv('PID',i.pid)+kv('Uptime',fmtDur(i.uptimeSec))+kv('Node',esc(i.node))+
       kv('Proz. CPU',i.procCpuPct.toFixed(1)+'%')+
       kv('RSS',fmtBytes(i.mem.rss))+
-      '<div class="kv"><span class="k">Heap</span><span class="v">'+fmtBytes(i.mem.heapUsed)+' / '+fmtBytes(i.mem.heapTotal)+'</span></div>'+bar(heapPct,heapPct>90)+
+      '<div class="kv"><span class="k">Heap</span><span class="v">'+fmtBytes(i.mem.heapUsed)+' / '+fmtBytes(heapMax)+' <span class="mono" style="opacity:.6">(res '+fmtBytes(i.mem.heapTotal)+')</span></span></div>'+bar(heapPct,heapPct>90)+
       kv('Event-Loop Lag','x̄ '+i.eventLoopLagMs.mean.toFixed(1)+' / p99 '+i.eventLoopLagMs.p99.toFixed(1)+' / max '+i.eventLoopLagMs.max.toFixed(0)+' ms')+
       kv('WS sockets/devices',i.ws.sockets+' / '+i.ws.devices)+
       kv('Peer-Instanzen',i.ws.peerInstances+' ('+i.ws.remoteDevices+' remote dev)')+
