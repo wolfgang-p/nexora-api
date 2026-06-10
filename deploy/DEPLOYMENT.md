@@ -25,6 +25,19 @@ cd /opt/koro-api
 sudo ./deploy/install.sh
 ```
 
+**Ganz am Anfang fragt das Script die Umgebung ab** und konfiguriert Domains +
+Deploy-Branch automatisch:
+
+| Auswahl | Domains | Deploy-Branch (`deploy.sh`) |
+|---|---|---|
+| production | `api.koro.chat`, `db.koro.chat`, `studio.koro.chat` | `main` |
+| staging | `api-staging.koro.chat`, `db-staging…`, `studio-staging…` | `staging` |
+| dev | `api-dev.koro.chat`, `db-dev…`, `studio-dev…` | `dev` |
+
+Die Wahl wird in `deploy/koro-deploy.conf` gespeichert (pro Server, nicht
+committet); `deploy.sh` zieht dann automatisch den passenden Branch und
+`koroctl.sh`/Compose nutzen die passenden Domains (`${API_HOST}` etc.).
+
 Das Script gibt **saubere Status-Logs** aus (Schritte, ✓/✗, Warnungen); das
 Paket-/Build-Rauschen landet in `/var/log/koro-install-<ts>.log`. Generierte
 Secrets werden zusätzlich in `deploy/.install-credentials` (chmod 600)

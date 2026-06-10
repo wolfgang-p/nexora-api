@@ -11,6 +11,14 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 
+# Environment-Konfig (von install.sh geschrieben): liefert DEPLOY_BRANCH +
+# API_HOST/DB_HOST/STUDIO_HOST. set -a -> sourced Vars werden exportiert, damit
+# die ${API_HOST}-Interpolation in den Compose-Labels greift.
+CONF="$REPO_DIR/deploy/koro-deploy.conf"
+if [ -f "$CONF" ]; then set -a; . "$CONF"; set +a; fi
+: "${API_HOST:=api.koro.chat}"; : "${DB_HOST:=db.koro.chat}"; : "${STUDIO_HOST:=studio.koro.chat}"
+export API_HOST DB_HOST STUDIO_HOST
+
 BRANCH="${DEPLOY_BRANCH:-main}"
 COMPOSE="docker compose -f deploy/docker-compose.api.yml"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"   # seconds to wait for an instance

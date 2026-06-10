@@ -17,17 +17,23 @@
 # =============================================================================
 set -uo pipefail   # bewusst KEIN -e: best-effort, Status soll nie abbrechen
 
-# ── Domains / Pfade ──────────────────────────────────────────────────────────
-API_DOMAIN="api.koro.chat"
-DB_DOMAIN="db.koro.chat"
-STUDIO_DOMAIN="studio.koro.chat"
+# ── Pfade ────────────────────────────────────────────────────────────────────
 # Symlink-fest: echten Pfad auflösen, damit der Repo-Pfad auch stimmt, wenn das
 # Script als /usr/local/bin/koroctl verlinkt aufgerufen wird.
 SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
 REPO_DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
 SUPABASE_STACK="/opt/supabase-stack"
-KORO_ENV="$REPO_DIR/.env"
 CTL_LOG="/var/log/koroctl.log"
+
+# ── Environment-Konfig (von install.sh geschrieben) ──────────────────────────
+# Liefert KORO_ENV + DEPLOY_BRANCH + API_HOST/DB_HOST/STUDIO_HOST. set -a sorgt
+# dafür, dass die Vars exportiert werden -> ${API_HOST}-Interpolation greift.
+CONF="$REPO_DIR/deploy/koro-deploy.conf"
+if [ -f "$CONF" ]; then set -a; . "$CONF"; set +a; fi
+: "${KORO_ENV:=production}"
+: "${API_HOST:=api.koro.chat}"; : "${DB_HOST:=db.koro.chat}"; : "${STUDIO_HOST:=studio.koro.chat}"
+export API_HOST DB_HOST STUDIO_HOST
+API_DOMAIN="$API_HOST"; DB_DOMAIN="$DB_HOST"; STUDIO_DOMAIN="$STUDIO_HOST"
 
 API_COMPOSE="docker compose -f $REPO_DIR/deploy/docker-compose.api.yml"
 PROXY_COMPOSE="docker compose -f $REPO_DIR/deploy/docker-compose.proxy.yml"
@@ -228,6 +234,7 @@ do_status_brief() {
 
 do_status() {
   phase "STATUS  $(now)"
+  info "Environment: ${C_BOLD}${KORO_ENV}${C_RESET}  ·  Branch: ${C_BOLD}${DEPLOY_BRANCH:-?}${C_RESET}  ·  ${API_DOMAIN}"
 
   phase "Kern-Container (Kurzüberblick)"
   do_status_brief

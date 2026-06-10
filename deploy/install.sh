@@ -2,7 +2,14 @@
 # =============================================================================
 #  koro-api — Vollständiges One-Shot Server-Setup
 # =============================================================================
-#  Führt ALLE Schritte aus deploy/DEPLOYMENT.md hintereinander aus:
+#  Fragt zuerst die Umgebung ab (production / staging / dev) und konfiguriert
+#  Domains + Deploy-Branch entsprechend:
+#    production →  api.koro.chat          ·  Branch main
+#    staging    →  api-staging.koro.chat  ·  Branch staging
+#    dev        →  api-dev.koro.chat      ·  Branch dev
+#  (Auswahl landet in deploy/koro-deploy.conf; deploy.sh + koroctl.sh lesen sie.)
+#
+#  Führt danach ALLE Schritte aus deploy/DEPLOYMENT.md hintereinander aus:
 #
 #    0. Server vorbereiten   (Docker, git, postgresql-client-16, edge-Netz)
 #    1. Traefik starten      (Reverse Proxy + Let's-Encrypt)
@@ -20,10 +27,9 @@
 # =============================================================================
 set -euo pipefail
 
-# ── Domains (müssen zu den Labels in den Compose-Files passen) ───────────────
-API_DOMAIN="api.koro.chat"
-DB_DOMAIN="db.koro.chat"
-STUDIO_DOMAIN="studio.koro.chat"
+# ── Domains + Branch werden nach der Environment-Abfrage gesetzt ─────────────
+# (dev → api-dev.koro.chat / Branch dev · staging → api-staging… / Branch
+#  staging · production → api.koro.chat / Branch main)
 
 # ── Pfade ───────────────────────────────────────────────────────────────────
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -148,6 +154,57 @@ ensure_on_edge() {
 require_root
 : >"$LOGFILE" || { LOGFILE="$REPO_DIR/koro-install-$TS.log"; : >"$LOGFILE"; }
 
+# ── Environment wählen (ganz am Anfang) ──────────────────────────────────────
+# Steuert Domains UND den Git-Branch, den deploy.sh später zieht.
+{
+  printf '\n%s  In welche Umgebung wird installiert?%s\n' "${C_BOLD}${C_BLUE}" "${C_RESET}"
+  printf '    %s1)%s production   →  api.koro.chat          ·  Branch %smain%s\n'    "${C_BOLD}" "${C_RESET}" "${C_BOLD}" "${C_RESET}"
+  printf '    %s2)%s staging      →  api-staging.koro.chat  ·  Branch %sstaging%s\n' "${C_BOLD}" "${C_RESET}" "${C_BOLD}" "${C_RESET}"
+  printf '    %s3)%s dev          →  api-dev.koro.chat      ·  Branch %sdev%s\n'     "${C_BOLD}" "${C_RESET}" "${C_BOLD}" "${C_RESET}"
+} >&2
+read -r -p "  Auswahl [1-3]: " ENV_CHOICE </dev/tty || ENV_CHOICE=""
+case "$ENV_CHOICE" in
+  1) KORO_ENV=production; SUFFIX="";         DEPLOY_BRANCH="main" ;;
+  2) KORO_ENV=staging;    SUFFIX="-staging"; DEPLOY_BRANCH="staging" ;;
+  3) KORO_ENV=dev;        SUFFIX="-dev";     DEPLOY_BRANCH="dev" ;;
+  *) err "Ungültige Auswahl '$ENV_CHOICE' — bitte 1, 2 oder 3."; exit 1 ;;
+esac
+API_DOMAIN="api${SUFFIX}.koro.chat"
+DB_DOMAIN="db${SUFFIX}.koro.chat"
+STUDIO_DOMAIN="studio${SUFFIX}.koro.chat"
+# Für die Compose-Interpolation (${API_HOST} etc. in den compose/override-Files):
+export API_HOST="$API_DOMAIN" DB_HOST="$DB_DOMAIN" STUDIO_HOST="$STUDIO_DOMAIN"
+
+# Zentrale Deploy-Konfig — wird von deploy.sh (Branch!) und koroctl.sh gelesen.
+CONF_FILE="$REPO_DIR/deploy/koro-deploy.conf"
+cat >"$CONF_FILE" <<EOF
+# koro-api Deployment-Konfiguration — generiert von install.sh ($TS)
+# Gelesen von install.sh, deploy.sh, koroctl.sh. Pro Server eigen, NICHT committen.
+KORO_ENV=$KORO_ENV
+DEPLOY_BRANCH=$DEPLOY_BRANCH
+API_HOST=$API_DOMAIN
+DB_HOST=$DB_DOMAIN
+STUDIO_HOST=$STUDIO_DOMAIN
+EOF
+
+# Repo auf den Ziel-Branch bringen, damit Build + Migrationen + spätere deploy.sh
+# denselben Stand fahren. Nur wenn der Branch auf origin existiert — sonst auf dem
+# aktuellen Branch bleiben (z. B. wenn dev/staging noch nicht gepusht ist).
+if git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  CUR_BRANCH="$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+  if [ "$CUR_BRANCH" != "$DEPLOY_BRANCH" ]; then
+    if git -C "$REPO_DIR" fetch --quiet origin "$DEPLOY_BRANCH" 2>/dev/null \
+       && git -C "$REPO_DIR" checkout "$DEPLOY_BRANCH" >>"$LOGFILE" 2>&1; then
+      git -C "$REPO_DIR" pull --ff-only origin "$DEPLOY_BRANCH" >>"$LOGFILE" 2>&1 || true
+      BRANCH_NOTE="auf Branch '$DEPLOY_BRANCH' gewechselt"
+    else
+      BRANCH_NOTE="WARN: Branch '$DEPLOY_BRANCH' nicht auf origin — bleibe auf '$CUR_BRANCH' (Branch anlegen+pushen!)"
+    fi
+  else
+    BRANCH_NOTE="bereits auf Branch '$DEPLOY_BRANCH'"
+  fi
+fi
+
 printf '%s\n' "${C_BOLD}${C_BLUE}"
 cat <<'BANNER'
    _                                  _
@@ -158,9 +215,12 @@ cat <<'BANNER'
                                  |_|   vollautomatisches Deployment
 BANNER
 printf '%s' "${C_RESET}"
+info "Environment: ${C_BOLD}$KORO_ENV${C_RESET}  (Deploy-Branch: ${C_BOLD}$DEPLOY_BRANCH${C_RESET})"
+info "Git:         ${BRANCH_NOTE:-—}"
 info "Repo:        $REPO_DIR"
 info "Logdatei:    $LOGFILE  ${C_DIM}(Paket-/Build-Rauschen landet hier)${C_RESET}"
 info "Domains:     $API_DOMAIN · $DB_DOMAIN · $STUDIO_DOMAIN"
+info "Config:      $CONF_FILE"
 
 # =============================================================================
 step "Server vorbereiten (Docker, git, psql-Client, edge-Netz)"
@@ -265,6 +325,11 @@ else
   set_env "$SB" SITE_URL "https://koro.chat"
   set_env "$SB" API_EXTERNAL_URL "https://$DB_DOMAIN"
   set_env "$SB" SUPABASE_PUBLIC_URL "https://$DB_DOMAIN"
+  # Host-Vars auch hier ablegen, damit der Override (${DB_HOST}/${STUDIO_HOST})
+  # selbst bei manuellem `docker compose up` im Supabase-Ordner korrekt auflöst.
+  set_env "$SB" API_HOST "$API_DOMAIN"
+  set_env "$SB" DB_HOST "$DB_DOMAIN"
+  set_env "$SB" STUDIO_HOST "$STUDIO_DOMAIN"
   ok "Supabase .env konfiguriert"
 
   # Override: Kong ans edge-Netz + Route db.koro.chat (+ optional Studio)

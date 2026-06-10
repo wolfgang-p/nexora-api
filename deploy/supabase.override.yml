@@ -20,7 +20,7 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=edge
-      - "traefik.http.routers.supabase.rule=Host(`db.koro.chat`)"
+      - "traefik.http.routers.supabase.rule=Host(`${DB_HOST:-db.koro.chat}`)"
       - traefik.http.routers.supabase.entrypoints=websecure
       - traefik.http.routers.supabase.tls=true
       - traefik.http.routers.supabase.tls.certresolver=le
@@ -37,7 +37,7 @@ services:
     labels:
       - traefik.enable=true
       - traefik.docker.network=edge
-      - "traefik.http.routers.studio.rule=Host(`studio.koro.chat`)"
+      - "traefik.http.routers.studio.rule=Host(`${STUDIO_HOST:-studio.koro.chat}`)"
       - traefik.http.routers.studio.entrypoints=websecure
       - traefik.http.routers.studio.tls=true
       - traefik.http.routers.studio.tls.certresolver=le

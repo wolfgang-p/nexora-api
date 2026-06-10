@@ -40,7 +40,9 @@ x-api-common: &api-common
     - traefik.docker.network=edge
     # Both instances declare the SAME router + service -> Traefik merges them
     # into one load-balanced pool with two servers.
-    - "traefik.http.routers.koro.rule=Host(`api.koro.chat`)"
+    # Host kommt aus deploy/koro-deploy.conf via Env (install/koroctl/deploy
+    # exportieren API_HOST). Ohne Env -> production-Default.
+    - "traefik.http.routers.koro.rule=Host(`${API_HOST:-api.koro.chat}`)"
     - traefik.http.routers.koro.entrypoints=websecure,api3001
     - traefik.http.routers.koro.tls=true
     - traefik.http.routers.koro.tls.certresolver=le

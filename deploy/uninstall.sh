@@ -28,6 +28,7 @@ SUPABASE_STACK="/opt/supabase-stack"
 SUPABASE_SRC="/opt/supabase"
 KORO_ENV="$REPO_DIR/.env"
 CRED_FILE="$REPO_DIR/deploy/.install-credentials"
+CONF_FILE="$REPO_DIR/deploy/koro-deploy.conf"
 
 # ── Flags ────────────────────────────────────────────────────────────────────
 DO_IMAGES=0; DO_PURGE=0; ASSUME_YES=0
@@ -137,6 +138,7 @@ if [ "$DO_PURGE" -eq 1 ]; then
   run "$SUPABASE_SRC entfernen"   rm -rf "$SUPABASE_SRC"
   run "koro-api/.env entfernen"   rm -f "$KORO_ENV"
   run "Credentials entfernen"     rm -f "$CRED_FILE"
+  run "Deploy-Konfig entfernen"   rm -f "$CONF_FILE"
   run_sh "Install-Logs entfernen" 'rm -f /var/log/koro-install-*.log'
   warn "Das Git-Repo unter $REPO_DIR bleibt bestehen (Script liegt darin)."
 else
