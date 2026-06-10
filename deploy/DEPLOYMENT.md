@@ -44,7 +44,60 @@ Secrets werden zusätzlich in `deploy/.install-credentials` (chmod 600)
 gesichert. Die ausführliche, manuelle Anleitung mit allen Hintergründen steht
 weiterhin unten.
 
+---
 
+## Stack steuern — `koroctl` (start / stop / restart / status)
+
+Für geordnetes Hoch-/Runterfahren und einen schnellen Gesamtstatus gibt es
+`deploy/koroctl.sh`. Einmalig als systemweiten Befehl hinterlegen (Symlink):
+
+```bash
+sudo chmod +x /opt/koro-api/deploy/koroctl.sh
+sudo ln -sf /opt/koro-api/deploy/koroctl.sh /usr/local/bin/koroctl
+```
+
+Danach von überall:
+
+```bash
+sudo koroctl start      # geordnet hoch: Traefik → Supabase (DB-first) → edge → koro-api
+sudo koroctl stop       # sanft runter: koro-api zuerst (Drain), entfernt NICHTS
+sudo koroctl restart    # stop + start
+sudo koroctl status     # Container, Health, Uptime, edge-Netz, DB, Commit, App-Config, Env/Branch
+```
+
+Das Script ist symlink-fest (löst seinen Repo-Pfad selbst auf) und liest
+`deploy/koro-deploy.conf`, kennt also die richtigen Domains/den Branch der
+Umgebung. Logbuch zusätzlich in `/var/log/koroctl.log`.
+
+> Für **bewusstes** Stoppen immer `koroctl stop` nehmen (graceful Drain), nicht
+> `docker compose down` — `down` entfernt Container und löst die manuell
+> verbundene edge-Zuordnung von Kong. Ein reiner `sudo reboot` ist ok: die
+> `restart: unless-stopped`-Policies fahren alles wieder hoch.
+
+---
+
+## Alles wieder entfernen — `deploy/uninstall.sh`
+
+Vollständiger Teardown mit Sicherheitsabfrage (du musst `DELETE` tippen):
+
+```bash
+cd /opt/koro-api
+sudo ./deploy/uninstall.sh                  # Container + Volumes + edge-Netz + koro-api-Image
+sudo ./deploy/uninstall.sh --images         # zusätzlich Supabase/Traefik/Redis-Images
+sudo ./deploy/uninstall.sh --purge          # zusätzlich Dateien: .env, /opt/supabase[-stack], Logs, Credentials, Conf
+sudo ./deploy/uninstall.sh --purge --images --yes   # alles, ohne Rückfrage
+```
+
+⚠️ **Unwiderruflich** — löscht das Supabase-DB-Volume, Uploads und Zertifikate.
+Kein Backup. (`--yes` überspringt die Rückfrage; ohne `--purge` bleiben Dateien
+wie `.env` erhalten.) Kontrolle danach: `docker ps -a`, `docker volume ls`,
+`docker network ls` zeigen nichts koro/supabase mehr.
+
+> **Manuell/komplett verbastelter Host** (z. B. Alt-Server): Wenn Container mit
+> Nicht-Standard-Namen übrig sind, hilft ein voller Docker-Reset —
+> `docker ps -aq | xargs -r docker rm -f` und danach
+> `docker system prune -a --volumes -f` (⚠️ entfernt **alles** Docker auf dem
+> Host, auch Unbeteiligtes).
 
 ---
 
