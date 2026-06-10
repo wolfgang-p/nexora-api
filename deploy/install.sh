@@ -35,7 +35,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SUPABASE_SRC="/opt/supabase"
 SUPABASE_STACK="/opt/supabase-stack"
-KORO_ENV="$REPO_DIR/.env"
+ENV_FILE="$REPO_DIR/.env"   # Pfad zur koro-api .env (NICHT der Env-Name KORO_ENV!)
 CRED_FILE="$REPO_DIR/deploy/.install-credentials"
 TS="$(date '+%Y%m%d-%H%M%S')"
 LOGFILE="/var/log/koro-install-$TS.log"
@@ -452,8 +452,8 @@ ok "Schema-Cache neu geladen"
 # =============================================================================
 step "koro-api .env bauen (Supabase automatisch, Rest abgefragt)"
 # =============================================================================
-if [ -f "$KORO_ENV" ]; then
-  cp "$KORO_ENV" "$KORO_ENV.bak-$TS"
+if [ -f "$ENV_FILE" ]; then
+  cp "$ENV_FILE" "$ENV_FILE.bak-$TS"
   warn "Vorhandene .env gesichert als .env.bak-$TS — wird neu geschrieben."
 fi
 
@@ -472,8 +472,8 @@ OPENAI_API_KEY="$(ask OPENAI_API_KEY 'OpenAI API Key (KI-Features, AI_PROVIDER=o
 TURN_TOKEN="$(ask TURN_TOKEN 'TURN-Token (WebRTC Relay-Credentials)' secret)"
 TURN_KEY_ID="$(ask TURN_KEY_ID 'TURN Key-ID')"
 
-info "Schreibe $KORO_ENV …"
-cat >"$KORO_ENV" <<EOF
+info "Schreibe $ENV_FILE …"
+cat >"$ENV_FILE" <<EOF
 # Generiert von deploy/install.sh am $TS — NICHT committen.
 
 # ── Server ───────────────────────────────────────────────────────────
@@ -520,7 +520,7 @@ TURN_KEY_ID=$TURN_KEY_ID
 # ── Status-Dashboard (HTTP Basic, Passwort) ──────────────────────────
 STATUS_PASSWORD=$STATUS_PASSWORD
 EOF
-chmod 600 "$KORO_ENV"
+chmod 600 "$ENV_FILE"
 ok ".env geschrieben (REDIS_URL/INSTANCE_ID/CERT_DIR/DRAIN_DELAY_MS kommen aus dem Compose-File)"
 
 # =============================================================================
