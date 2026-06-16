@@ -83,6 +83,18 @@ async function optionalAuthenticate(req) {
   const header = req.headers['authorization'] || '';
   const m = header.match(/^Bearer\s+(.+)$/i);
   if (!m) { req.auth = null; return; }
+  // A Koro API key (e.g. a bot) authenticates here too: delegate to the
+  // api-key middleware, which sets req.auth via the bot-device bridge when the
+  // key is bound to one. Lazy require avoids any module load-order cycle.
+  if (/^koro_(?:live|test)_/.test(m[1])) {
+    req.auth = null;
+    try {
+      const { authenticateApiKey } = require('../api_keys/middleware');
+      // Pass a no-op res — `require:false` means it never writes a response.
+      await authenticateApiKey(req, { writeHead() {}, end() {}, setHeader() {} }, { require: false });
+    } catch { /* leave req.auth null on any failure */ }
+    return;
+  }
   try {
     const claims = verifyAccess(m[1]);
     const { data: device } = await supabase.from('devices')
