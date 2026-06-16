@@ -58,7 +58,26 @@ async function buildIceServers() {
       credential: config.ice.turnCredential || undefined,
     });
   }
+
+  // Loud, once-per-process warning if we're shipping STUN-only. This is the
+  // #1 cause of "I joined a meeting but everyone's video is black": two peers
+  // on different networks (home + mobile, both behind symmetric/CGNAT) have
+  // no direct path and need a TURN relay. STUN can't fix that. Surfacing it
+  // in the logs turns a silent black-tile bug into an obvious config gap.
+  const hasTurn =
+    (config.ice.cfTurnKeyId && config.ice.cfTurnToken) || config.ice.turnUrls.length > 0;
+  if (!hasTurn && !warnedNoTurn) {
+    warnedNoTurn = true;
+    console.warn(
+      '[ice] No TURN configured (TURN_KEY_ID/TURN_TOKEN or TURN_URLS). ' +
+      'Calls/meetings between peers on different networks will fail with black ' +
+      'video — they need a TURN relay. See deploy/DEPLOYMENT.md → TURN.',
+    );
+  }
   return servers;
 }
+
+// Module-level guard so the warning logs once, not on every ice-servers fetch.
+let warnedNoTurn = false;
 
 module.exports = { buildIceServers };

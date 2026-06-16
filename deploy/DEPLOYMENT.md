@@ -286,6 +286,43 @@ Compose-File gesetzt — nicht in die `.env` schreiben.
 > (lagen bisher im Klartext in der `.env`). Supabase-Keys ändern sich durchs
 > Self-Hosting ohnehin.
 
+### TURN (PFLICHT für Anrufe/Meetings über verschiedene Netze)
+
+**Symptom ohne TURN:** In einem Meeting sieht jeder nur sich selbst, die anderen
+Kacheln bleiben **schwarz** (kein Bild/Ton). Ursache: Zwei Teilnehmer in
+verschiedenen Netzen (z. B. Heim-WLAN + Mobilfunk, beide hinter symmetrischem /
+Carrier-Grade-NAT) haben **keinen direkten P2P-Pfad**. STUN allein kann das nicht
+lösen — es braucht einen **TURN-Relay**. Ohne TURN-Config liefert die API nur
+STUN und der Server loggt beim ersten `…/ice-servers`-Abruf eine Warnung
+(`[ice] No TURN configured …`).
+
+Zwei Wege, einer reicht:
+
+```ini
+# A) Cloudflare Realtime TURN (empfohlen — ephemere Credentials, Secret bleibt
+#    nur auf dem Server). Key-ID + Token aus dem Cloudflare-Dashboard
+#    (Realtime → TURN). Die API mintet pro Abruf kurzlebige Zugangsdaten.
+TURN_KEY_ID=<cloudflare turn key id>
+TURN_TOKEN=<cloudflare turn api token>
+
+# B) Statischer TURN-Server (coturn / Metered / Twilio) als Alternative:
+# TURN_URLS=turn:turn.example.com:3478,turns:turn.example.com:5349
+# TURN_USERNAME=<user>
+# TURN_CREDENTIAL=<pass>
+```
+
+Nach dem Setzen `koroctl restart` (o. Ä.). Prüfen:
+
+```bash
+curl -s https://api.koro.chat:3001/meetings/<room_id>/ice-servers | jq '.ice_servers'
+# Es MUSS mindestens ein turn:/turns:-Eintrag mit username/credential erscheinen,
+# nicht nur stun:.
+```
+
+> Medien laufen P2P bzw. über TURN — **nie** über den Signaling-Server. TURN
+> trägt nur Pakete, sieht aber keinen Klartext (DTLS-SRTP bleibt Ende-zu-Ende
+> zwischen den Browsern).
+
 ---
 
 ## 4. Proxy + API starten
