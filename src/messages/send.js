@@ -158,7 +158,10 @@ async function sendMessage(req, res) {
     if (parent) threadRootId = parent.thread_root_id || parent.id;
   }
 
-  // Insert envelope
+  // Insert envelope. For bot sends (via API key) we freeze the bot's display
+  // name into sender_fallback so the name is stable even if a client can't
+  // resolve the bot user — defense-in-depth on top of the users.display_name
+  // resolution that already works because a bot is a real users row.
   const { data: msg, error: msgErr } = await supabase.from('messages').insert({
     conversation_id: convId,
     sender_user_id: req.auth.userId,
@@ -168,6 +171,7 @@ async function sendMessage(req, res) {
     thread_root_id: threadRootId,
     media_object_id: mediaId,
     forwarded_at: forwarded ? new Date().toISOString() : null,
+    sender_fallback: req.auth.viaApiKey ? (req.auth.user?.display_name || null) : null,
   }).select('*').single();
   if (msgErr) return serverError(res, 'Could not create message', msgErr);
 

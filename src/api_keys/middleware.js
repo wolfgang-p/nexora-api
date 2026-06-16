@@ -37,6 +37,27 @@ async function authenticateApiKey(req, res, { require: requireIt = true } = {}) 
     .eq('id', key.id).then(() => {}, () => {});
 
   req.apiKey = key;
+
+  // Bridge to the normal auth context: a key bound to a bot device acts AS
+  // that bot. Load the device + its user and populate req.auth so handlers
+  // that stamp req.auth.userId / req.auth.deviceId (e.g. messages/send.js)
+  // work unchanged. `viaApiKey` lets handlers branch (e.g. set sender_fallback).
+  if (key.crm_device_id) {
+    const { data: dev } = await supabase
+      .from('devices')
+      .select('id, user_id, revoked_at, user:user_id (id, display_name, username, is_bot)')
+      .eq('id', key.crm_device_id)
+      .maybeSingle();
+    if (dev && !dev.revoked_at) {
+      req.auth = {
+        userId: dev.user_id,
+        deviceId: dev.id,
+        device: { id: dev.id, user_id: dev.user_id },
+        user: dev.user || { id: dev.user_id },
+        viaApiKey: true,
+      };
+    }
+  }
   return true;
 }
 

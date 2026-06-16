@@ -1,7 +1,7 @@
 'use strict';
 
 const config = require('./config');
-const { notFound, ok, serverError } = require('./util/response');
+const { notFound, ok, serverError, forbidden } = require('./util/response');
 const { authenticate, requireAdmin, optionalAuthenticate } = require('./auth/middleware');
 const { counter, httpResponse, observe } = require('./util/metrics');
 const logger = require('./util/logger');
@@ -35,6 +35,8 @@ const tasks = require('./tasks');
 const calls = require('./calls');
 const webhooksReg = require('./webhooks/register');
 const apiKeys = require('./api_keys');
+const apiKeyAuth = require('./api_keys/middleware');
+const bots = require('./bots');
 const reports = require('./reports');
 const admin = require('./admin');
 const adminMetrics = require('./admin/metrics');
@@ -82,6 +84,11 @@ function r(method, pattern, handler, opts = {}) {
     // `optionalAuth: true` means: parse Bearer token if present, but
     // don't reject anonymous callers. Used by koro-meet endpoints.
     optionalAuth: opts.optionalAuth === true,
+    // `dualAuth: true` accepts EITHER a Koro API key (Authorization: Bearer
+    // koro_live_…) OR a normal JWT. An API key bound to a bot device populates
+    // req.auth as that bot (see api_keys/middleware bridge), so bot-capable
+    // routes (messages, conversations, tasks, …) work for both humans + bots.
+    dualAuth: opts.dualAuth === true,
   });
 }
 
@@ -132,11 +139,11 @@ r('GET', '/devices', devices.listOwnDevices);
 r('PUT', '/devices/:id', devices.updateDevice);
 r('DELETE', '/devices/:id', devices.revokeDevice);
 r('POST', '/devices/push-token', devices.registerPushToken);
-r('GET', '/conversations/:id/devices', devices.listConversationDevices);
+r('GET', '/conversations/:id/devices', devices.listConversationDevices, { dualAuth: true });
 
 // --- Conversations ---
 r('GET', '/conversations', conversations.listConversations);
-r('POST', '/conversations', conversations.createConversation);
+r('POST', '/conversations', conversations.createConversation, { dualAuth: true });
 r('GET', '/conversations/:id/info', conversations.getConversationInfo);
 r('PUT', '/conversations/:id', conversations.updateConversation);
 r('POST', '/conversations/:id/members', conversations.addMembers);
@@ -148,8 +155,8 @@ r('POST',   '/conversations/:id/archive',           conversations.archive);
 r('DELETE', '/conversations/:id/archive',           conversations.archive);
 
 // --- Messages ---
-r('POST', '/messages', messagesSend.sendMessage);
-r('GET', '/conversations/:id/messages', messagesList.listMessages);
+r('POST', '/messages', messagesSend.sendMessage, { dualAuth: true });
+r('GET', '/conversations/:id/messages', messagesList.listMessages, { dualAuth: true });
 r('POST', '/messages/:id/delivered', messagesRead.markDelivered);
 r('POST', '/messages/:id/read', messagesRead.markRead);
 r('DELETE', '/messages/:id', messagesDelete.deleteMessage);
@@ -212,9 +219,9 @@ r('POST', '/workspaces/:id/channels', workspaces.createChannel);
 r('POST', '/workspaces/join', workspaces.joinByCode);
 
 // --- Tasks ---
-r('GET', '/tasks', tasks.list);
-r('POST', '/tasks', tasks.create);
-r('PUT', '/tasks/:id', tasks.update);
+r('GET', '/tasks', tasks.list, { dualAuth: true });
+r('POST', '/tasks', tasks.create, { dualAuth: true });
+r('PUT', '/tasks/:id', tasks.update, { dualAuth: true });
 r('DELETE', '/tasks/:id', tasks.destroy);
 r('GET', '/tasks/lists', tasks.listLists);
 r('POST', '/tasks/lists', tasks.createList);
@@ -249,6 +256,13 @@ r('POST', '/ai/transcribe',     ai.transcribeVoice);
 r('GET', '/workspaces/:id/api-keys', apiKeys.list);
 r('POST', '/workspaces/:id/api-keys', apiKeys.create);
 r('DELETE', '/api-keys/:id', apiKeys.revoke);
+
+// Named bots (workspace admin)
+r('GET',    '/workspaces/:id/bots',                  bots.list);
+r('POST',   '/workspaces/:id/bots',                  bots.create);
+r('PUT',    '/workspaces/:id/bots/:bot_id',          bots.update);
+r('DELETE', '/workspaces/:id/bots/:bot_id',          bots.destroy);
+r('POST',   '/workspaces/:id/bots/:bot_id/rotate-key', bots.rotateKey);
 
 // --- Reports (user-facing) ---
 r('POST', '/reports',                    reports.createReport);
@@ -396,8 +410,8 @@ r('GET',    '/calendar/links',                            calendar.listLinks);
 r('POST',   '/calendar/oauth/:provider/begin',            calendar.oauthBegin);
 r('POST',   '/calendar/oauth/:provider/finish',           calendar.oauthFinish);
 r('DELETE', '/calendar/links/:provider',                  calendar.revoke);
-r('POST',   '/calendar/events',                           calendar.createEvent);
-r('GET',    '/calendar/events',                           calendar.listEvents);
+r('POST',   '/calendar/events',                           calendar.createEvent, { dualAuth: true });
+r('GET',    '/calendar/events',                           calendar.listEvents,  { dualAuth: true });
 r('PUT',    '/calendar/events/:id',                       calendar.updateEvent);
 r('DELETE', '/calendar/events/:id',                       calendar.deleteEvent);
 
@@ -538,7 +552,23 @@ async function handleRequest(req, res) {
     route.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
 
     try {
-      if (route.auth) {
+      if (route.dualAuth) {
+        // Try API-key auth first (non-rejecting). A bot key sets req.auth via
+        // the bridge in api_keys/middleware. If no API key was supplied, fall
+        // back to the normal JWT path.
+        const header = req.headers['authorization'] || '';
+        const isApiKey = /^Bearer\s+koro_(?:live|test)_/.test(header);
+        if (isApiKey) {
+          const ok = await apiKeyAuth.authenticateApiKey(req, res, { require: true });
+          if (!ok) return;
+          // A key without a bot device can't act as a sender — reject for
+          // routes that need an identity.
+          if (!req.auth) { forbidden(res, 'API key is not bound to a bot identity'); return; }
+        } else {
+          const authed = await authenticate(req, res);
+          if (!authed) return;
+        }
+      } else if (route.auth) {
         const authed = await authenticate(req, res);
         if (!authed) return;
       } else if (route.optionalAuth) {
