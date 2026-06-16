@@ -46,7 +46,7 @@ weiterhin unten.
 
 ---
 
-## Stack steuern — `koroctl` (start / stop / restart / status)
+## Stack steuern — `koroctl` (start / stop / restart / status / log)
 
 Für geordnetes Hoch-/Runterfahren und einen schnellen Gesamtstatus gibt es
 `deploy/koroctl.sh`. Einmalig als systemweiten Befehl hinterlegen (Symlink):
@@ -68,6 +68,29 @@ sudo koroctl status     # Container, Health, Uptime, edge-Netz, DB, Commit, App-
 Das Script ist symlink-fest (löst seinen Repo-Pfad selbst auf) und liest
 `deploy/koro-deploy.conf`, kennt also die richtigen Domains/den Branch der
 Umgebung. Logbuch zusätzlich in `/var/log/koroctl.log`.
+
+### Logs ansehen — `koroctl log` (neueste zuerst)
+
+Container-Logs der API-Instanzen (oder Redis) bequem einsehen — standardmäßig
+**neueste Zeile oben**:
+
+```bash
+sudo koroctl log green        # letzte 200 Zeilen von koro-api-green, neueste zuerst
+sudo koroctl log blue 500     # letzte 500 Zeilen von koro-api-blue
+sudo koroctl log green -f     # live mitlaufen (chronologisch, Strg-C beendet)
+sudo koroctl log redis        # auch Redis (oder ein beliebiger Container-Name)
+```
+
+Ziele: `blue` → `koro-api-blue`, `green` → `koro-api-green`, `redis` → `koro-redis`;
+jeder andere Wert wird als direkter Container-Name durchgereicht. Die Zeilenzahl
+lässt sich als Argument oder über `LOG_TAIL=…` setzen. Ohne `koroctl` direkt:
+
+```bash
+docker logs --tail 200 --timestamps koro-api-green 2>&1 | tac
+```
+
+> Im Follow-Modus (`-f`) bleibt die Ausgabe chronologisch (neueste unten) — ein
+> laufender Stream lässt sich nicht „neueste zuerst" puffern.
 
 > Für **bewusstes** Stoppen immer `koroctl stop` nehmen (graceful Drain), nicht
 > `docker compose down` — `down` entfernt Container und löst die manuell

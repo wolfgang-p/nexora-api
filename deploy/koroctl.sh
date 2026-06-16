@@ -305,6 +305,43 @@ do_status() {
 }
 
 # =============================================================================
+#  LOG  — Container-Logs ansehen (neueste zuerst)
+# =============================================================================
+#  koroctl log blue            letzte 200 Zeilen von koro-api-blue, neueste oben
+#  koroctl log green 500       letzte 500 Zeilen
+#  koroctl log green -f        live mitlaufen (chronologisch, neueste unten)
+#  Ziele: blue | green | redis | <beliebiger Container-Name>
+do_log() {
+  local target="${1:-}" follow="" tail_n="${LOG_TAIL:-200}" arg
+  shift || true
+  # restliche Argumente: -f/follow  und/oder eine Zahl (tail-Anzahl)
+  for arg in "$@"; do
+    case "$arg" in
+      -f|--follow|follow) follow=1 ;;
+      *[!0-9]*|'')        ;;            # ignoriere Nicht-Zahlen
+      *)                  tail_n="$arg" ;;
+    esac
+  done
+
+  local container
+  case "$target" in
+    blue|green) container="koro-api-$target" ;;
+    redis)      container="koro-redis" ;;
+    '')         err "Welche Instanz?  sudo ./deploy/koroctl.sh log <blue|green|redis> [Zeilen] [-f]"; exit 2 ;;
+    *)          container="$target" ;;   # beliebigen Container-Namen erlauben
+  esac
+  docker inspect "$container" >/dev/null 2>&1 || { err "Container '$container' existiert nicht (läuft der Stack? → koroctl status)"; exit 1; }
+
+  if [ -n "$follow" ]; then
+    info "Live-Logs von ${C_BOLD}$container${C_RESET} (chronologisch, Strg-C zum Beenden) …"
+    docker logs --tail "$tail_n" --timestamps -f "$container" 2>&1
+  else
+    info "Logs von ${C_BOLD}$container${C_RESET} — ${C_BOLD}neueste zuerst${C_RESET} (letzte $tail_n Zeilen):"
+    docker logs --tail "$tail_n" --timestamps "$container" 2>&1 | tac
+  fi
+}
+
+# =============================================================================
 #  Dispatch
 # =============================================================================
 CMD="${1:-}"
@@ -313,12 +350,17 @@ case "$CMD" in
   stop)    require_root stop;    do_stop ;;
   restart) require_root restart; do_restart ;;
   status)  do_status ;;
+  log|logs) shift; do_log "$@" ;;
   *)
     printf 'koroctl — koro-api Stack-Steuerung\n\n'
     printf '  Aufruf:  sudo ./deploy/koroctl.sh <command>\n\n'
-    printf '  start     geordnet hochfahren (Traefik → Supabase DB-first → koro-api)\n'
-    printf '  stop      sanft herunterfahren (koro-api drained zuerst), entfernt nichts\n'
-    printf '  restart   stop, dann start\n'
-    printf '  status    ausführlicher Zustand (Container, edge, DB, Commit, App-Config)\n\n'
+    printf '  start          geordnet hochfahren (Traefik → Supabase DB-first → koro-api)\n'
+    printf '  stop           sanft herunterfahren (koro-api drained zuerst), entfernt nichts\n'
+    printf '  restart        stop, dann start\n'
+    printf '  status         ausführlicher Zustand (Container, edge, DB, Commit, App-Config)\n'
+    printf '  log <ziel>     Logs ansehen, neueste zuerst — ziel: blue|green|redis\n'
+    printf '                 z.B.  koroctl log green        (letzte 200 Zeilen)\n'
+    printf '                       koroctl log blue 500     (letzte 500 Zeilen)\n'
+    printf '                       koroctl log green -f     (live mitlaufen)\n\n'
     exit 2 ;;
 esac
