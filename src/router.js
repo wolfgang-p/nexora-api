@@ -124,8 +124,8 @@ r('POST', '/pairing/sessions/:id/deliver', pairingDeliver.deliverPairing);
 r('GET', '/pairing/sessions/:id/token', pairingToken.getPairingToken, { auth: false });
 
 // --- Users ---
-r('GET', '/users/me', users.me);
-r('PUT', '/users/me', users.updateMe);
+r('GET', '/users/me', users.me, { dualAuth: true });
+r('PUT', '/users/me', users.updateMe, { dualAuth: true });
 r('GET', '/users/search', users.search);
 r('GET', '/users/by-username/:username', users.byUsername);
 r('GET', '/users/blocked', users.listBlocked);
@@ -142,7 +142,7 @@ r('POST', '/devices/push-token', devices.registerPushToken);
 r('GET', '/conversations/:id/devices', devices.listConversationDevices, { dualAuth: true });
 
 // --- Conversations ---
-r('GET', '/conversations', conversations.listConversations);
+r('GET', '/conversations', conversations.listConversations, { dualAuth: true });
 r('POST', '/conversations', conversations.createConversation, { dualAuth: true });
 r('GET', '/conversations/:id/info', conversations.getConversationInfo);
 r('PUT', '/conversations/:id', conversations.updateConversation);
@@ -208,14 +208,14 @@ r('POST', '/media/:id/recipients', media.postRecipients);
 r('GET', '/media/:id/key', media.getMyKey);
 
 // --- Workspaces ---
-r('GET', '/workspaces', workspaces.list);
-r('POST', '/workspaces', workspaces.create);
-r('GET', '/workspaces/:id', workspaces.get);
-r('PUT', '/workspaces/:id', workspaces.update);
+r('GET', '/workspaces', workspaces.list, { dualAuth: true });
+r('POST', '/workspaces', workspaces.create, { dualAuth: true });
+r('GET', '/workspaces/:id', workspaces.get, { dualAuth: true });
+r('PUT', '/workspaces/:id', workspaces.update, { dualAuth: true });
 r('DELETE', '/workspaces/:id', workspaces.destroy);
-r('POST', '/workspaces/:id/invites', workspaces.createInvite);
+r('POST', '/workspaces/:id/invites', workspaces.createInvite, { dualAuth: true });
 r('POST', '/workspaces/:id/invite-by-contact', workspaces.inviteByContact);
-r('POST', '/workspaces/:id/channels', workspaces.createChannel);
+r('POST', '/workspaces/:id/channels', workspaces.createChannel, { dualAuth: true });
 r('POST', '/workspaces/join', workspaces.joinByCode);
 
 // --- Tasks ---
@@ -240,9 +240,9 @@ r('POST', '/calls/:id/leave', calls.leave);
 r('POST', '/calls/:id/end', calls.end);
 
 // --- Webhooks ---
-r('GET', '/webhooks', webhooksReg.list);
-r('POST', '/webhooks', webhooksReg.create);
-r('DELETE', '/webhooks/:id', webhooksReg.destroy);
+r('GET', '/webhooks', webhooksReg.list, { dualAuth: true });
+r('POST', '/webhooks', webhooksReg.create, { dualAuth: true });
+r('DELETE', '/webhooks/:id', webhooksReg.destroy, { dualAuth: true });
 
 // --- AI ---
 r('GET',  '/ai/status',         ai.status);
@@ -335,7 +335,7 @@ r('POST',   '/auth/recovery/verify',            recovery.verifyAndLogin,     { a
 
 // --- koro-meet (multi-participant meetings) ---
 r('POST',   '/meetings',                        meetings.create,        { auth: false, optionalAuth: true });
-r('GET',    '/meetings',                        meetings.listMine);
+r('GET',    '/meetings',                        meetings.listMine,      { dualAuth: true });
 r('GET',    '/meetings/:roomId',                meetings.getOne,        { auth: false });
 r('GET',    '/meetings/:roomId/ice-servers',    meetings.iceServers,    { auth: false });
 r('POST',   '/meetings/:roomId/join',           meetings.join,          { auth: false, optionalAuth: true });
