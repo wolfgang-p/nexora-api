@@ -44,6 +44,9 @@ const polls = require('./polls');
 const threads = require('./messages/thread');
 const stories = require('./stories');
 const drive = require('./drive');
+const wiki = require('./wiki');
+const wsMembers = require('./workspaces/members');
+const wsSearch = require('./workspaces/search');
 const feedback = require('./feedback');
 const inbound = require('./webhooks/inbound');
 const inboundAdmin = require('./webhooks/inbound_admin');
@@ -419,6 +422,21 @@ r('DELETE', '/workspaces/:id/files/:file_id',      drive.destroy);
 r('POST',   '/workspaces/:id/files/:file_id/pin',  drive.pin);
 r('POST',   '/workspaces/:id/files/folders',           drive.createFolder);
 r('GET',    '/workspaces/:id/files/:file_id/versions', drive.listVersions);
+
+// Workspace wiki / notes
+r('GET',    '/workspaces/:id/pages',            wiki.list);
+r('POST',   '/workspaces/:id/pages',            wiki.create);
+r('GET',    '/workspaces/:id/pages/:page_id',   wiki.getOne);
+r('PUT',    '/workspaces/:id/pages/:page_id',   wiki.update);
+r('DELETE', '/workspaces/:id/pages/:page_id',   wiki.destroy);
+
+// Workspace member directory + role/permission management
+r('GET',    '/workspaces/:id/members',             wsMembers.list);
+r('PUT',    '/workspaces/:id/members/:user_id',    wsMembers.update);
+r('DELETE', '/workspaces/:id/members/:user_id',    wsMembers.remove);
+
+// Workspace-wide search
+r('GET',    '/workspaces/:id/search',           wsSearch.search);
 
 // --- Admin: reports moderation ---
 r('GET',    '/admin/reports',             reports.adminListReports,  { admin: true });
