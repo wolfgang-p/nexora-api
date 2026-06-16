@@ -46,6 +46,12 @@ async function route(ws, data) {
     case 'webrtc.answer':
     case 'webrtc.ice':
     case 'webrtc.media-state':
+    // `webrtc.offer-request` lets a callee ask the caller to re-send its
+    // offer. The original offer is fire-and-forget over WS and isn't stored,
+    // so if it was missed (cold-start push, race, dropped event) the callee
+    // can't accept. This routes the request to the caller's device, which
+    // re-emits its offer. Same forwarding shape as the other webrtc signals.
+    case 'webrtc.offer-request':
       if (!data.target_device_id) return send(ws, { type: 'error', error: 'target_device_id required' });
       return sendTo(data.target_device_id, {
         type: data.type,
