@@ -2,7 +2,7 @@
 
 const config = require('./config');
 const { notFound, ok, serverError, forbidden } = require('./util/response');
-const { authenticate, requireAdmin, optionalAuthenticate } = require('./auth/middleware');
+const { authenticate, requireAdmin, optionalAuthenticate, requireOAuthScope } = require('./auth/middleware');
 const { counter, httpResponse, observe } = require('./util/metrics');
 const logger = require('./util/logger');
 const lifecycle = require('./util/lifecycle');
@@ -64,6 +64,10 @@ const totp = require('./auth/totp');
 const loginHistory = require('./auth/loginHistory');
 const recovery = require('./auth/recovery');
 const meetings = require('./meetings');
+const oauthClients = require('./oauth/clients');
+const oauthAuthorize = require('./oauth/authorize');
+const oauthToken = require('./oauth/token');
+const oauthConnections = require('./oauth/connections');
 
 /**
  * Tiny route matcher. Routes are tuples: [method, pattern, handler, { auth }]
@@ -89,6 +93,11 @@ function r(method, pattern, handler, opts = {}) {
     // req.auth as that bot (see api_keys/middleware bridge), so bot-capable
     // routes (messages, conversations, tasks, …) work for both humans + bots.
     dualAuth: opts.dualAuth === true,
+    // `scope: 'messages:write'` — when the caller authenticated with a "Login
+    // with Koro" OAuth token, that scope must have been granted, else 403.
+    // First-party session tokens & bot API keys ignore this (full access /
+    // governed by api-key scopes respectively). See requireOAuthScope.
+    scope: opts.scope || null,
   });
 }
 
@@ -116,6 +125,25 @@ r('POST', '/auth/verify-otp', otp.verifyOtp, { auth: false });
 r('POST', '/auth/refresh', otp.refresh, { auth: false });
 r('POST', '/auth/logout', otp.logout);
 
+// --- OAuth "Login with Koro" ---
+// Developer-app registration (workspace admins, managed from the dev portal).
+r('GET',    '/workspaces/:id/oauth-clients', oauthClients.list);
+r('POST',   '/workspaces/:id/oauth-clients', oauthClients.create);
+r('PUT',    '/oauth-clients/:id',            oauthClients.update);
+r('POST',   '/oauth-clients/:id/rotate-secret', oauthClients.rotateSecret);
+r('DELETE', '/oauth-clients/:id',            oauthClients.revoke);
+// Authorization (consent QR) flow. authorize/getGrant/token are public — the
+// developer's site & the mobile poll/exchange them. approve/deny are authed
+// (the consenting Koro user, via the mobile app).
+r('POST', '/oauth/authorize',            oauthAuthorize.authorize, { auth: false });
+r('GET',  '/oauth/grants/:id',           oauthAuthorize.getGrant,  { auth: false });
+r('POST', '/oauth/grants/:id/approve',   oauthAuthorize.approve);
+r('POST', '/oauth/grants/:id/deny',      oauthAuthorize.deny);
+r('POST', '/oauth/token',                oauthToken.token,         { auth: false });
+// User-facing "connected apps" management.
+r('GET',    '/oauth/connections',            oauthConnections.list);
+r('DELETE', '/oauth/connections/:clientId',  oauthConnections.revoke);
+
 // --- Pairing ---
 r('POST', '/pairing/sessions', pairingCreate.createPairing, { auth: false });
 r('GET', '/pairing/sessions/:id', pairingPoll.pollPairing, { auth: false });
@@ -124,7 +152,7 @@ r('POST', '/pairing/sessions/:id/deliver', pairingDeliver.deliverPairing);
 r('GET', '/pairing/sessions/:id/token', pairingToken.getPairingToken, { auth: false });
 
 // --- Users ---
-r('GET', '/users/me', users.me, { dualAuth: true });
+r('GET', '/users/me', users.me, { dualAuth: true, scope: 'profile:read' });
 r('PUT', '/users/me', users.updateMe, { dualAuth: true });
 r('GET', '/users/search', users.search);
 r('GET', '/users/by-username/:username', users.byUsername);
@@ -139,11 +167,11 @@ r('GET', '/devices', devices.listOwnDevices);
 r('PUT', '/devices/:id', devices.updateDevice);
 r('DELETE', '/devices/:id', devices.revokeDevice);
 r('POST', '/devices/push-token', devices.registerPushToken);
-r('GET', '/conversations/:id/devices', devices.listConversationDevices, { dualAuth: true });
+r('GET', '/conversations/:id/devices', devices.listConversationDevices, { dualAuth: true, scope: 'conversations:read' });
 
 // --- Conversations ---
-r('GET', '/conversations', conversations.listConversations, { dualAuth: true });
-r('POST', '/conversations', conversations.createConversation, { dualAuth: true });
+r('GET', '/conversations', conversations.listConversations, { dualAuth: true, scope: 'conversations:read' });
+r('POST', '/conversations', conversations.createConversation, { dualAuth: true, scope: 'conversations:write' });
 r('GET', '/conversations/:id/info', conversations.getConversationInfo);
 r('PUT', '/conversations/:id', conversations.updateConversation);
 r('POST', '/conversations/:id/members', conversations.addMembers);
@@ -155,8 +183,8 @@ r('POST',   '/conversations/:id/archive',           conversations.archive);
 r('DELETE', '/conversations/:id/archive',           conversations.archive);
 
 // --- Messages ---
-r('POST', '/messages', messagesSend.sendMessage, { dualAuth: true });
-r('GET', '/conversations/:id/messages', messagesList.listMessages, { dualAuth: true });
+r('POST', '/messages', messagesSend.sendMessage, { dualAuth: true, scope: 'messages:write' });
+r('GET', '/conversations/:id/messages', messagesList.listMessages, { dualAuth: true, scope: 'messages:read' });
 r('POST', '/messages/:id/delivered', messagesRead.markDelivered);
 r('POST', '/messages/:id/read', messagesRead.markRead);
 r('DELETE', '/messages/:id', messagesDelete.deleteMessage);
@@ -219,9 +247,9 @@ r('POST', '/workspaces/:id/channels', workspaces.createChannel, { dualAuth: true
 r('POST', '/workspaces/join', workspaces.joinByCode);
 
 // --- Tasks ---
-r('GET', '/tasks', tasks.list, { dualAuth: true });
-r('POST', '/tasks', tasks.create, { dualAuth: true });
-r('PUT', '/tasks/:id', tasks.update, { dualAuth: true });
+r('GET', '/tasks', tasks.list, { dualAuth: true, scope: 'tasks:read' });
+r('POST', '/tasks', tasks.create, { dualAuth: true, scope: 'tasks:write' });
+r('PUT', '/tasks/:id', tasks.update, { dualAuth: true, scope: 'tasks:write' });
 r('DELETE', '/tasks/:id', tasks.destroy);
 r('GET', '/tasks/lists', tasks.listLists);
 r('POST', '/tasks/lists', tasks.createList);
@@ -240,9 +268,9 @@ r('POST', '/calls/:id/leave', calls.leave);
 r('POST', '/calls/:id/end', calls.end);
 
 // --- Webhooks ---
-r('GET', '/webhooks', webhooksReg.list, { dualAuth: true });
-r('POST', '/webhooks', webhooksReg.create, { dualAuth: true });
-r('DELETE', '/webhooks/:id', webhooksReg.destroy, { dualAuth: true });
+r('GET', '/webhooks', webhooksReg.list, { dualAuth: true, scope: 'webhooks:manage' });
+r('POST', '/webhooks', webhooksReg.create, { dualAuth: true, scope: 'webhooks:manage' });
+r('DELETE', '/webhooks/:id', webhooksReg.destroy, { dualAuth: true, scope: 'webhooks:manage' });
 
 // --- AI ---
 r('GET',  '/ai/status',         ai.status);
@@ -577,6 +605,11 @@ async function handleRequest(req, res) {
       if (route.admin) {
         const ok = await requireAdmin(req, res);
         if (!ok) return;
+      }
+      // OAuth scope gate: only bites when the request used a "Login with Koro"
+      // token (req.auth.scopes is an array). No-op for first-party / bot auth.
+      if (route.scope && req.auth) {
+        if (!requireOAuthScope(req, res, route.scope)) return;
       }
       await route.handler(req, res, { params, query });
     } catch (err) {

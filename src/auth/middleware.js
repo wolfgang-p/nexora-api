@@ -56,6 +56,10 @@ async function authenticate(req, res) {
     deviceId: claims.deviceId,
     device: { id: device.id, user_id: device.user_id, kind: device.kind, revoked_at: device.revoked_at },
     user: { id: user.id, is_admin: !!user.is_admin, banned_at: user.banned_at },
+    // For a "Login with Koro" OAuth token: the granted scopes (array) and the
+    // developer app id. null for a normal first-party (full-access) session.
+    scopes: claims.scopes,
+    oauthClientId: claims.clientId,
   };
   return true;
 }
@@ -110,8 +114,29 @@ async function optionalAuthenticate(req) {
       deviceId: claims.deviceId,
       device: { id: device.id, user_id: device.user_id, kind: device.kind, revoked_at: device.revoked_at },
       user: { id: user.id, is_admin: !!user.is_admin, banned_at: user.banned_at },
+      scopes: claims.scopes,
+      oauthClientId: claims.clientId,
     };
   } catch { req.auth = null; }
 }
 
-module.exports = { authenticate, requireAdmin, optionalAuthenticate };
+/**
+ * Enforce that the current request carries an OAuth scope (when it's an OAuth
+ * token). MUST be called after authenticate()/dualAuth populated req.auth.
+ *
+ *  - First-party session token (req.auth.scopes == null): full access → allow.
+ *  - API-key/bot (req.auth.viaApiKey): governed by api-key scopes elsewhere → allow.
+ *  - OAuth token: allow only if the scope (or '*') was granted.
+ *
+ * Returns true if allowed; sends 403 and returns false otherwise.
+ */
+function requireOAuthScope(req, res, scope) {
+  const scopes = req.auth?.scopes;
+  // Not an OAuth token (first-party or bot) — scope gate doesn't apply.
+  if (scopes == null) return true;
+  if (scopes.includes('*') || scopes.includes(scope)) return true;
+  forbidden(res, `Missing scope: ${scope}`);
+  return false;
+}
+
+module.exports = { authenticate, requireAdmin, optionalAuthenticate, requireOAuthScope };

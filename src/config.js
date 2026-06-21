@@ -71,6 +71,16 @@ module.exports = {
     refreshTtl: int('JWT_REFRESH_TTL', 60 * 60 * 24 * 180),
   },
 
+  // "Login with Koro" OAuth. Authorization codes are short-lived; the issued
+  // access token is short (1h default) and the developer rotates it with the
+  // refresh token (30 days default, sliding). All reuse the JWT secret.
+  oauth: {
+    grantTtl: int('OAUTH_GRANT_TTL', 5 * 60),      // consent-QR session lifetime
+    codeTtl: int('OAUTH_CODE_TTL', 2 * 60),        // authz code lifetime after approval
+    accessTtl: int('OAUTH_ACCESS_TTL', 60 * 60),   // 1 hour
+    refreshTtl: int('OAUTH_REFRESH_TTL', 60 * 60 * 24 * 30), // 30 days, sliding
+  },
+
   sms: {
     provider: process.env.SMS_PROVIDER || null,
     apiKey: process.env.SMS_API_KEY || null,
