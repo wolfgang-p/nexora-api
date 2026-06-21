@@ -28,8 +28,8 @@ function badRequest(res, msg = 'Bad request', extra) {
   send(res, 400, { error: msg, ...(extra || {}) });
 }
 
-function unauthorized(res, msg = 'Unauthorized') {
-  send(res, 401, { error: msg });
+function unauthorized(res, msg = 'Unauthorized', extra) {
+  send(res, 401, { error: msg, ...(extra || {}) });
 }
 
 function forbidden(res, msg = 'Forbidden') {

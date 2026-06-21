@@ -268,6 +268,17 @@ async function verifyOtp(req, res) {
  */
 const ROTATION_GRACE_DAYS = 7;
 
+// A refresh response can be lost in transit (flaky mobile network, app
+// backgrounded mid-request): the server rotated the token, but the client
+// never received the successor and still holds the now-rotated old token.
+// On the next attempt that old token looks like a "reuse" — but it is NOT
+// theft, just a retry. If the rotation happened within this short window we
+// treat it as a benign retry: NO global session revoke (which would log the
+// user out), just a soft 401 so the client keeps its tokens and tries again.
+// A genuine replay attack surfaces much later than this, so real theft
+// detection is preserved.
+const REUSE_GRACE_SECONDS = 60;
+
 async function refresh(req, res) {
   const body = await readJson(req).catch(() => null);
   if (!body?.refresh_token) return badRequest(res, 'refresh_token required');
@@ -284,9 +295,28 @@ async function refresh(req, res) {
   if (!sess) return unauthorized(res, 'Invalid refresh token');
 
   // THEFT DETECTION — the presented token was already rotated out, which
-  // means someone (user OR attacker) is replaying an older copy. Can't
-  // tell which side is legitimate, so we lock the whole user out.
+  // means someone (user OR attacker) is replaying an older copy.
   if (sess.rotated_at) {
+    const rotatedAgoMs = Date.now() - new Date(sess.rotated_at).getTime();
+
+    // Grace window: a freshly-rotated token almost always means the client
+    // lost the successful response and is simply retrying. Don't punish that
+    // — no global revoke, no logout. Just a soft 401; the client keeps its
+    // stored tokens and retries (single-flight on the client collapses the
+    // dupes). This is the fix for "I keep getting logged out after a while".
+    if (rotatedAgoMs <= REUSE_GRACE_SECONDS * 1000) {
+      audit({
+        userId: sess.user_id, deviceId: sess.device_id,
+        action: 'auth.refresh.retry_grace',
+        targetType: 'session', targetId: sess.id,
+        metadata: { rotated_ago_ms: rotatedAgoMs },
+        req,
+      });
+      return unauthorized(res, 'Refresh token already rotated — retry');
+    }
+
+    // Rotated long ago → genuine replay. Can't tell which side is legitimate,
+    // so lock every live session of this user out.
     await supabase.from('sessions')
       .update({ revoked_at: new Date().toISOString() })
       .eq('user_id', sess.user_id)
@@ -295,10 +325,10 @@ async function refresh(req, res) {
       userId: sess.user_id, deviceId: sess.device_id,
       action: 'auth.refresh.reuse_detected',
       targetType: 'session', targetId: sess.id,
-      metadata: { ip: req.socket?.remoteAddress || null },
+      metadata: { ip: req.socket?.remoteAddress || null, rotated_ago_ms: rotatedAgoMs },
       req,
     });
-    return unauthorized(res, 'Refresh token reuse detected — all sessions revoked');
+    return unauthorized(res, 'Refresh token reuse detected — all sessions revoked', { code: 'session_revoked' });
   }
 
   if (sess.revoked_at) return unauthorized(res, 'Session revoked');
