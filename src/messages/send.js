@@ -7,7 +7,7 @@ const { broadcastToDevices } = require('../ws/dispatch');
 const { pushToDevices } = require('../push');
 const { check, send429 } = require('../middleware/rateLimit');
 
-const VALID_KINDS = ['text', 'image', 'voice', 'video', 'file', 'location', 'poll'];
+const VALID_KINDS = ['text', 'image', 'voice', 'video', 'file', 'location', 'poll', 'meeting_invite'];
 
 /**
  * POST /messages   (authed)
@@ -226,6 +226,42 @@ async function sendMessage(req, res) {
     pollOptions = { poll, options: optInserted };
   }
 
+  // Meeting invite: the client sealed the card payload (title, time, room_id,
+  // url) inside the ciphertext, just like a poll. We only validate that the
+  // referenced meeting exists + isn't ended, and store a plaintext FK so the
+  // card can be re-resolved / de-duplicated. body.meeting_invite.meeting_id is
+  // the only plaintext we accept.
+  let meetingInvite = null;
+  if (kind === 'meeting_invite') {
+    const meetingId = body.meeting_invite?.meeting_id;
+    if (!meetingId || typeof meetingId !== 'string') {
+      await supabase.from('messages').delete().eq('id', msg.id);
+      return badRequest(res, 'meeting_invite.meeting_id required');
+    }
+    const { data: meeting } = await supabase
+      .from('meetings')
+      .select('id, room_id, title, scheduled_at, ended_at')
+      .eq('id', meetingId)
+      .maybeSingle();
+    if (!meeting || meeting.ended_at) {
+      await supabase.from('messages').delete().eq('id', msg.id);
+      return badRequest(res, 'Meeting not found or already ended');
+    }
+    const { error: miErr } = await supabase.from('message_meetings').insert({
+      message_id: msg.id,
+      meeting_id: meeting.id,
+    });
+    if (miErr) {
+      await supabase.from('messages').delete().eq('id', msg.id);
+      return serverError(res, 'Could not link meeting invite', miErr);
+    }
+    meetingInvite = {
+      meeting_id: meeting.id,
+      room_id: meeting.room_id,
+      scheduled_at: meeting.scheduled_at,
+    };
+  }
+
   // Fire WS push (async) + push notifications to offline devices
   const recipientDeviceIds = recipients.map((r) => r.device_id);
   broadcastToDevices(
@@ -306,6 +342,7 @@ async function sendMessage(req, res) {
       options: pollOptions.options, // [{ id, position }]
     };
   }
+  if (meetingInvite) envelope.meeting_invite = meetingInvite;
   created(res, { message: envelope });
 }
 
@@ -316,6 +353,7 @@ function previewLabelFor(kind) {
     case 'video': return '🎞️ Neues Video';
     case 'file':  return '📎 Neue Datei';
     case 'poll':  return '📊 Neue Umfrage';
+    case 'meeting_invite': return '📹 Meeting-Einladung';
     default:      return 'Neue Nachricht';
   }
 }

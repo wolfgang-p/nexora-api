@@ -148,6 +148,36 @@ async function listMessages(req, res, { params, query }) {
     }
   }
 
+  // Hydrate meeting invites: attach the server-known meeting state (room_id,
+  // scheduled_at, ended_at) so the card can show live status. The title lives
+  // in the sealed ciphertext; we only surface non-secret meeting fields.
+  const inviteMsgIds = msgs.filter((m) => m.kind === 'meeting_invite').map((m) => m.id);
+  const inviteByMsg = new Map();
+  if (inviteMsgIds.length) {
+    const { data: links } = await supabase.from('message_meetings')
+      .select('message_id, meeting_id')
+      .in('message_id', inviteMsgIds);
+    const meetingIds = [...new Set((links || []).map((l) => l.meeting_id))];
+    const { data: mtgs } = meetingIds.length
+      ? await supabase.from('meetings')
+          .select('id, room_id, scheduled_at, started_at, ended_at')
+          .in('id', meetingIds)
+      : { data: [] };
+    const mtgById = new Map((mtgs || []).map((m) => [m.id, m]));
+    for (const l of (links || [])) {
+      const mtg = mtgById.get(l.meeting_id);
+      if (mtg) {
+        inviteByMsg.set(l.message_id, {
+          meeting_id: mtg.id,
+          room_id: mtg.room_id,
+          scheduled_at: mtg.scheduled_at,
+          started_at: mtg.started_at,
+          ended_at: mtg.ended_at,
+        });
+      }
+    }
+  }
+
   // Thread metadata: for each message shown in the page, if it's a root
   // (id appears in some other message's thread_root_id), attach
   // {reply_count, latest_reply_at, last_read_at}.
@@ -192,6 +222,7 @@ async function listMessages(req, res, { params, query }) {
       any_read_at: agg?.anyRead || false,
       reactions: rxnMap.get(m.id) || [],
       poll: pollByMsg.get(m.id) || null,
+      meeting_invite: inviteByMsg.get(m.id) || null,
       thread: threadMeta.get(m.id) || null,
     };
   });
