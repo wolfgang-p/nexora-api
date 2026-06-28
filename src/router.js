@@ -3,7 +3,7 @@
 const config = require('./config');
 const { notFound, ok, serverError, forbidden } = require('./util/response');
 const { authenticate, requireAdmin, optionalAuthenticate, requireOAuthScope } = require('./auth/middleware');
-const { counter, httpResponse, observe } = require('./util/metrics');
+const { counter, httpResponse, observe, recordRoute } = require('./util/metrics');
 const logger = require('./util/logger');
 const lifecycle = require('./util/lifecycle');
 const status = require('./admin/status');
@@ -82,7 +82,7 @@ function r(method, pattern, handler, opts = {}) {
     return '/([^/]+)';
   }) + '/?$');
   routes.push({
-    method, regex, keys, handler,
+    method, pattern, regex, keys, handler,
     auth: opts.auth !== false,
     admin: opts.admin === true,
     // `optionalAuth: true` means: parse Bearer token if present, but
@@ -116,6 +116,8 @@ r('GET', '/health', async (req, res) => {
 // --- Status dashboard (HTTP Basic, single fixed password) ---
 r('GET', '/status', status.statusPage, { auth: false });
 r('GET', '/status/data', status.statusData, { auth: false });
+r('GET', '/status/flags', status.statusFlags, { auth: false });
+r('POST', '/status/action/:name', status.statusActionHandler, { auth: false });
 
 // --- Auth ---
 r('POST', '/auth/request-otp', otp.requestOtp, { auth: false });
@@ -565,9 +567,12 @@ async function handleRequest(req, res) {
 
   // Record status + latency on close. `writeHead` is monkey-wrapped so we
   // can read the final status even if the handler didn't use writeHead.
+  let matchedPattern = null;
   res.on('finish', () => {
     httpResponse(res.statusCode);
-    observe('http_request_duration_seconds', Number(process.hrtime.bigint() - startNs) / 1e9);
+    const ms = Number(process.hrtime.bigint() - startNs) / 1e6;
+    observe('http_request_duration_seconds', ms / 1000);
+    recordRoute(req.method, matchedPattern, res.statusCode, ms);
   });
 
   const { path, query } = parseQuery(req.url || '/');
@@ -576,6 +581,7 @@ async function handleRequest(req, res) {
     if (route.method !== req.method) continue;
     const m = path.match(route.regex);
     if (!m) continue;
+    matchedPattern = route.pattern;
     const params = {};
     route.keys.forEach((k, i) => { params[k] = decodeURIComponent(m[i + 1]); });
 

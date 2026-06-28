@@ -14,6 +14,55 @@ const counters = new Map();        // name → number
 const statusCounters = new Map();  // `${status}` → number (http responses)
 const histograms = new Map();      // name → { count, sum, buckets: [le,count][] }
 
+// Per-route stats for the status dashboard's mini-APM. Keyed by
+// "METHOD pattern" → rolling latency reservoir + status tallies. Kept small
+// and reset-on-read-of-window via a coarse 5-min decay so old spikes fade.
+const routes = new Map();          // "GET /users/:id" → { n, sum, max, s2xx, s4xx, s5xx, lat: number[] }
+const ROUTE_SAMPLE = 200;          // latency samples kept per route (for p95)
+
+function recordRoute(method, pattern, status, ms) {
+  if (!pattern) return;
+  const key = `${method} ${pattern}`;
+  let r = routes.get(key);
+  if (!r) {
+    r = { n: 0, sum: 0, max: 0, s2xx: 0, s4xx: 0, s5xx: 0, lat: [] };
+    routes.set(key, r);
+  }
+  r.n += 1;
+  r.sum += ms;
+  if (ms > r.max) r.max = ms;
+  if (status >= 500) r.s5xx += 1;
+  else if (status >= 400) r.s4xx += 1;
+  else r.s2xx += 1;
+  r.lat.push(ms);
+  if (r.lat.length > ROUTE_SAMPLE) r.lat.shift();
+}
+
+function pctl(arr, p) {
+  if (!arr.length) return 0;
+  const a = [...arr].sort((x, y) => x - y);
+  const i = Math.min(a.length - 1, Math.floor((p / 100) * a.length));
+  return a[i];
+}
+
+/** Top routes by latency and by error rate, for the APM panel. */
+function routeSnapshot() {
+  const out = [];
+  for (const [key, r] of routes) {
+    out.push({
+      route: key,
+      count: r.n,
+      avgMs: r.n ? r.sum / r.n : 0,
+      p95Ms: pctl(r.lat, 95),
+      maxMs: r.max,
+      errors: r.s5xx,
+      clientErrors: r.s4xx,
+      errorRate: r.n ? r.s5xx / r.n : 0,
+    });
+  }
+  return out;
+}
+
 function counter(name, delta = 1, labels) {
   const key = labels ? `${name}{${serializeLabels(labels)}}` : name;
   counters.set(key, (counters.get(key) || 0) + delta);
@@ -68,4 +117,4 @@ function prometheusText() {
   return lines.join('\n') + '\n';
 }
 
-module.exports = { counter, httpResponse, observe, metricsSnapshot, prometheusText };
+module.exports = { counter, httpResponse, observe, recordRoute, routeSnapshot, metricsSnapshot, prometheusText };

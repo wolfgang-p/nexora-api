@@ -28,10 +28,39 @@ function clientIp(req) {
   return req.socket?.remoteAddress || 'unknown';
 }
 
+// Top-N recently rate-limited keys, for the status dashboard. Capped + decayed
+// so it never grows unbounded.
+const limitedKeys = new Map(); // key → { count, lastAt }
+function noteLimited(key) {
+  const e = limitedKeys.get(key);
+  if (e) { e.count += 1; e.lastAt = Date.now(); }
+  else {
+    limitedKeys.set(key, { count: 1, lastAt: Date.now() });
+    if (limitedKeys.size > 500) {
+      const oldest = [...limitedKeys.entries()].sort((a, b) => a[1].lastAt - b[1].lastAt)[0];
+      if (oldest) limitedKeys.delete(oldest[0]);
+    }
+  }
+}
+
+/** Snapshot for the status dashboard: active buckets + top limited keys (15m). */
+function rateLimitStats() {
+  const cutoff = Date.now() - 15 * 60 * 1000;
+  const rows = [...limitedKeys.entries()]
+    .filter(([, v]) => v.lastAt >= cutoff)
+    .map(([key, v]) => ({ key, count: v.count, lastAt: v.lastAt }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 20);
+  let total = 0;
+  for (const v of limitedKeys.values()) if (v.lastAt >= cutoff) total += v.count;
+  return { activeBuckets: buckets.size, total, top: rows };
+}
+
 function check(limits) {
   for (const l of limits) {
     const r = hit(l);
     if (!r.ok) {
+      noteLimited(l.key);
       return {
         ok: false,
         status: 429,
@@ -63,4 +92,4 @@ setInterval(() => {
   }
 }, 60_000).unref();
 
-module.exports = { hit, check, send429, clientIp };
+module.exports = { hit, check, send429, clientIp, rateLimitStats };

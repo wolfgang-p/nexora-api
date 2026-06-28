@@ -3,6 +3,7 @@
 const { Expo } = require('expo-server-sdk');
 const { supabase } = require('../db/supabase');
 const { deviceOnline } = require('../ws/dispatch');
+const { counter: metricCounter } = require('../util/metrics');
 const config = require('../config');
 
 const expo = new Expo({ accessToken: config.push.expoAccessToken || undefined });
@@ -101,13 +102,20 @@ async function pushToDevices(deviceIds, opts = {}) {
       const tickets = await expo.sendPushNotificationsAsync(chunk);
       for (let i = 0; i < tickets.length; i++) {
         const t = tickets[i];
-        if (t.status === 'error' && t.details?.error === 'DeviceNotRegistered') {
-          // Phone uninstalled or token expired — clean up so we don't keep
-          // burning quota on dead endpoints.
-          await supabase.from('push_tokens').delete().eq('token', chunk[i].to);
+        if (t.status === 'error') {
+          metricCounter('push_failed_total');
+          if (t.details?.error === 'DeviceNotRegistered') {
+            // Phone uninstalled or token expired — clean up so we don't keep
+            // burning quota on dead endpoints.
+            metricCounter('push_dead_token_total');
+            await supabase.from('push_tokens').delete().eq('token', chunk[i].to);
+          }
+        } else {
+          metricCounter('push_sent_total');
         }
       }
     } catch (err) {
+      metricCounter('push_error_total', chunk.length);
       console.error('[push]', err?.message || err);
     }
   }

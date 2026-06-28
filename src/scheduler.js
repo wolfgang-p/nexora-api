@@ -23,11 +23,49 @@ const TICK_MS = 20_000;
 let ticking = false;
 let interval = null;
 
+// Per-job health for the status dashboard. Tracks last run, duration, error and
+// total run count so a stalled job (e.g. reminders not firing) is visible.
+const jobStats = new Map(); // name → { lastRunAt, lastDurationMs, lastError, runs, lastRows }
+let lastTickAt = 0;
+
+async function track(name, fn) {
+  const t0 = Date.now();
+  let rows = null;
+  let error = null;
+  try {
+    rows = await fn();
+  } catch (err) {
+    error = String(err?.message || err);
+    console.error(`[scheduler] ${name} failed`, error);
+  }
+  const prev = jobStats.get(name) || { runs: 0 };
+  jobStats.set(name, {
+    lastRunAt: Date.now(),
+    lastDurationMs: Date.now() - t0,
+    lastError: error,
+    runs: prev.runs + 1,
+    lastRows: typeof rows === 'number' ? rows : prev.lastRows ?? null,
+  });
+}
+
+/** Snapshot of scheduler health for the dashboard. */
+function schedulerStats() {
+  const jobs = {};
+  for (const [k, v] of jobStats) jobs[k] = v;
+  return { lastTickAt, tickMs: TICK_MS, running: !!interval, jobs };
+}
+
 async function tick() {
   if (ticking) return;
   ticking = true;
+  lastTickAt = Date.now();
   try {
-    await Promise.all([fireReminders(), fireScheduledMessages(), sweepRetention(), sweepDisappearing()]);
+    await Promise.all([
+      track('reminders', fireReminders),
+      track('scheduled_messages', fireScheduledMessages),
+      track('retention_sweep', sweepRetention),
+      track('disappearing_sweep', sweepDisappearing),
+    ]);
   } catch (err) {
     console.error('[scheduler] tick failed', err?.message || err);
   } finally {
@@ -297,4 +335,4 @@ function stop() {
   if (interval) { clearInterval(interval); interval = null; }
 }
 
-module.exports = { start, stop };
+module.exports = { start, stop, schedulerStats };
