@@ -91,3 +91,27 @@ Subsequent messages: `ping`, `typing.start`, `typing.stop`, `webrtc.offer`,
 - Webhook retry worker (persisted in `webhook_deliveries`; currently best-effort).
 - Per-table RLS policy unit tests.
 - Dockerfile + CI.
+
+## 📣 Changelog (koro-changelogs)
+
+When you ship a **medium-to-large feature** in this repo, add an entry to the
+public changelog at **`../koro-changelogs/logs.md`** (repo `koro-changelogs`).
+
+- Newest entries go at the TOP. Write user-facing, benefit-first prose (German).
+- Skip it for tiny fixes, refactors, dependency bumps, or **admin/ops-only**
+  internals (e.g. monitoring dashboards, ops CLI commands) — those don't belong
+  in a public changelog.
+- Entry format (see `koro-changelogs/CLAUDE.md` for the full spec):
+
+  ```markdown
+  ## YYYY-MM-DD — Kurzer Titel
+  > product: Koro API & Developer
+  > flags: New, Improved, Fixed, Security, Design
+
+  Ein bis zwei Sätze Nutzen.
+
+  - Stichpunkt.
+  ```
+
+- Allowed products: `Koro`, `Koro Meet`, `koro.bio`, `Koro Desktop`,
+  `Koro API & Developer`. Use **Koro API & Developer** for changes in this repo.
