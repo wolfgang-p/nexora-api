@@ -133,25 +133,30 @@ async function pushToDevices(deviceIds, opts = {}) {
  * through to the regular Expo push so nothing is lost.
  */
 async function pushIncomingCall(deviceIds, { callId, conversationId, kind, fromName }) {
-  // 1. Regular Expo push — same as before.
-  const regular = pushToDevices(deviceIds, {
-    title: fromName || 'Koro',
-    body: kind === 'video' ? 'Eingehender Videoanruf' : 'Eingehender Anruf',
-    category: 'call',
-    ttl: 45, // old call notifications aren't useful; drop after 45s
-    data: {
-      type: 'call.incoming',
-      call_id: callId,
-      conversation_id: conversationId,
-      kind,
-    },
-    includeOnline: true, // also ring devices that only have WS (may be backgrounded)
-  });
+  // ONE notification per device. iOS devices with a VoIP token get the
+  // PushKit push ONLY (it's the canonical call signal — rings CallKit even
+  // when the app is killed). Everything else (Android, iOS without VoIP) gets
+  // a single regular Expo push. We deliberately do NOT send both to the same
+  // device — that's what caused the duplicate call banners.
+  const voipDeviceIds = await pushVoipCall(deviceIds, { callId, conversationId, kind, fromName });
+  const handled = new Set(voipDeviceIds || []);
+  const expoTargets = deviceIds.filter((id) => !handled.has(id));
 
-  // 2. Parallel PushKit fan-out for iOS devices that registered a VoIP token.
-  const voip = pushVoipCall(deviceIds, { callId, conversationId, kind, fromName });
-
-  await Promise.allSettled([regular, voip]);
+  if (expoTargets.length) {
+    await pushToDevices(expoTargets, {
+      title: fromName || 'Koro',
+      body: kind === 'video' ? 'Eingehender Videoanruf' : 'Eingehender Anruf',
+      category: 'call',
+      ttl: 45, // old call notifications aren't useful; drop after 45s
+      data: {
+        type: 'call.incoming',
+        call_id: callId,
+        conversation_id: conversationId,
+        kind,
+      },
+      includeOnline: true, // also ring devices that only have WS (may be backgrounded)
+    });
+  }
 }
 
 /**
@@ -171,9 +176,9 @@ async function pushIncomingCall(deviceIds, { callId, conversationId, kind, fromN
  * path still fires so users on backgrounded devices still ring.
  */
 async function pushVoipCall(deviceIds, payload) {
-  if (!deviceIds?.length) return;
+  if (!deviceIds?.length) return [];
   if (!process.env.APNS_KEY_ID || !process.env.APNS_TEAM_ID || !process.env.APNS_KEY_P8 || !process.env.APNS_BUNDLE_ID) {
-    return; // not configured — silently skip
+    return []; // not configured — silently skip (Expo push handles all devices)
   }
 
   const { data: tokens } = await supabase
@@ -181,13 +186,13 @@ async function pushVoipCall(deviceIds, payload) {
     .select('device_id, voip_token')
     .in('device_id', deviceIds)
     .not('voip_token', 'is', null);
-  if (!tokens?.length) return;
+  if (!tokens?.length) return [];
 
   // Lazy-load the APNs HTTP/2 client so projects without the dep don't
   // explode at boot. Add to the API's package.json: "@parse/node-apn".
   let apn;
   try { apn = require('@parse/node-apn'); }
-  catch { console.warn('[voip-push] @parse/node-apn not installed — skipping'); return; }
+  catch { console.warn('[voip-push] @parse/node-apn not installed — skipping'); return []; }
 
   const provider = new apn.Provider({
     token: {
@@ -211,21 +216,34 @@ async function pushVoipCall(deviceIds, payload) {
     from_name: payload.fromName || 'Koro',
   };
 
+  // Map voip_token → device_id so we can report which devices were handled.
+  const tokenToDevice = new Map(tokens.map((t) => [t.voip_token, t.device_id]));
+  const handledDeviceIds = [];
   try {
     const targets = tokens.map((t) => t.voip_token);
     const result = await provider.send(note, targets);
+    const failedTokens = new Set();
     for (const f of result.failed || []) {
+      failedTokens.add(f.device);
       // Common: BadDeviceToken when a device reinstalls. Drop the
       // VoIP token so we don't keep retrying a dead one.
       if (f?.response?.reason === 'BadDeviceToken' || f?.status === '410') {
         await supabase.from('push_tokens').update({ voip_token: null }).eq('voip_token', f.device);
       }
     }
+    // A device is "handled" only if its VoIP push didn't fail — otherwise we
+    // let the regular Expo push pick it up so the call still rings.
+    for (const [tok, dev] of tokenToDevice) {
+      if (!failedTokens.has(tok)) handledDeviceIds.push(dev);
+    }
   } catch (err) {
     console.error('[voip-push]', err?.message || err);
+    // Whole batch failed → claim nothing, let Expo push cover every device.
+    return [];
   } finally {
     provider.shutdown();
   }
+  return handledDeviceIds;
 }
 
 /**

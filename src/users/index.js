@@ -63,14 +63,26 @@ async function getUser(req, res, { params }) {
     .eq('id', params.id).is('deleted_at', null).maybeSingle();
   if (!user) return notFound(res);
 
+  // Live online status: true if ANY of this user's non-revoked devices has an
+  // active WebSocket (across both api instances via the presence mirror).
+  let online = false;
+  try {
+    const { deviceOnline } = require('../ws/dispatch');
+    const { data: devs } = await supabase.from('devices')
+      .select('id').eq('user_id', user.id).is('revoked_at', null);
+    online = (devs || []).some((d) => deviceOnline(d.id));
+  } catch { /* presence unavailable — leave false */ }
+  user.online = online;
+
   // Privacy: respect the target's `show_last_seen` setting. The
   // calling user's own profile is always shown in full — it's their
-  // data either way.
+  // data either way. The same toggle hides live online status.
   if (user.id !== req.auth.userId) {
     const { data: settings } = await supabase.from('user_settings')
       .select('show_last_seen').eq('user_id', user.id).maybeSingle();
     if (settings && settings.show_last_seen === false) {
       user.last_seen_at = null;
+      user.online = false;
     }
   }
 
