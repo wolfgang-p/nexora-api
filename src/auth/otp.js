@@ -23,6 +23,16 @@ function normalizePhone(raw) {
 }
 
 /**
+ * App-Store / Play-Store review account. Returns true if this is the
+ * whitelisted review phone AND a fixed review OTP is configured. Used to skip
+ * SMS sending and to accept the fixed code on verify. Inactive unless BOTH
+ * REVIEW_PHONE and REVIEW_OTP env vars are set.
+ */
+function isReviewPhone(phone) {
+  return !!(config.review.phone && config.review.otp && phone === config.review.phone);
+}
+
+/**
  * POST /auth/request-otp   { phone_e164 }
  */
 async function requestOtp(req, res) {
@@ -31,6 +41,12 @@ async function requestOtp(req, res) {
 
   const phone = normalizePhone(body.phone_e164 || body.phone_number);
   if (!phone) return badRequest(res, 'Invalid phone number (E.164 required)');
+
+  // Review account: never send an SMS, never write an OTP row. The fixed code
+  // is accepted directly in verifyOtp. Respond as if the code was sent.
+  if (isReviewPhone(phone)) {
+    return ok(res, { ok: true, expires_in: OTP_TTL_SECONDS });
+  }
 
   const ip = clientIp(req);
   const rlimit = check([
@@ -107,28 +123,36 @@ async function verifyOtp(req, res) {
     return badRequest(res, 'Device info (kind, identity_public_key) required');
   }
 
-  // Pull latest active OTP for this phone
-  const { data: otp } = await supabase
-    .from('otps')
-    .select('id, code_hash, expires_at, consumed_at, attempts')
-    .eq('phone_e164', phone)
-    .is('consumed_at', null)
-    .gt('expires_at', new Date().toISOString())
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  // Review account: accept the fixed code without touching the otps table.
+  // Everything below (ban check, user upsert, token issuance) runs normally,
+  // so the reviewer gets a real, fully-functional session.
+  const isReview = isReviewPhone(phone);
+  if (isReview) {
+    if (code !== config.review.otp) return unauthorized(res, 'Invalid code');
+  } else {
+    // Pull latest active OTP for this phone
+    const { data: otp } = await supabase
+      .from('otps')
+      .select('id, code_hash, expires_at, consumed_at, attempts')
+      .eq('phone_e164', phone)
+      .is('consumed_at', null)
+      .gt('expires_at', new Date().toISOString())
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-  if (!otp) return unauthorized(res, 'OTP expired or not found');
-  if (otp.attempts >= MAX_ATTEMPTS) return unauthorized(res, 'Too many attempts');
+    if (!otp) return unauthorized(res, 'OTP expired or not found');
+    if (otp.attempts >= MAX_ATTEMPTS) return unauthorized(res, 'Too many attempts');
 
-  const inputHash = sha256(code, OTP_PEPPER);
-  if (inputHash !== otp.code_hash) {
-    await supabase.from('otps').update({ attempts: otp.attempts + 1 }).eq('id', otp.id);
-    return unauthorized(res, 'Invalid code');
+    const inputHash = sha256(code, OTP_PEPPER);
+    if (inputHash !== otp.code_hash) {
+      await supabase.from('otps').update({ attempts: otp.attempts + 1 }).eq('id', otp.id);
+      return unauthorized(res, 'Invalid code');
+    }
+
+    // Consume OTP
+    await supabase.from('otps').update({ consumed_at: new Date().toISOString() }).eq('id', otp.id);
   }
-
-  // Consume OTP
-  await supabase.from('otps').update({ consumed_at: new Date().toISOString() }).eq('id', otp.id);
 
   // Reject if this phone OR this device's identity_public_key is on the
   // fingerprint blocklist — a banned user can't re-register by rotating

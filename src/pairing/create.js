@@ -3,6 +3,7 @@
 const { supabase } = require('../db/supabase');
 const { pairingCode } = require('../util/crypto');
 const { readJson, badRequest, created, serverError } = require('../util/response');
+const { check, send429, clientIp } = require('../middleware/rateLimit');
 
 const PAIRING_TTL_MS = 120 * 1000;
 
@@ -12,6 +13,15 @@ const PAIRING_TTL_MS = 120 * 1000;
  * Returns: { id, pairing_code, expires_at }
  */
 async function createPairing(req, res) {
+  // No auth here (the new device has no identity yet), so gate per IP to stop
+  // a single source from spamming pairing-session/code creation.
+  const ip = clientIp(req);
+  const lim = check([
+    { key: `pair:create:min:${ip}`, max: 5,  windowMs: 60 * 1000 },
+    { key: `pair:create:hr:${ip}`,  max: 40, windowMs: 60 * 60 * 1000 },
+  ]);
+  if (!lim.ok) return send429(res, lim);
+
   const body = await readJson(req).catch(() => null);
   if (!body) return badRequest(res, 'Invalid JSON');
 

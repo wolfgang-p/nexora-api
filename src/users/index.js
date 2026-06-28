@@ -3,6 +3,7 @@
 const { supabase } = require('../db/supabase');
 const { ok, badRequest, notFound, readJson, serverError } = require('../util/response');
 const { sanitizeUser } = require('../auth/otp');
+const { check, send429 } = require('../middleware/rateLimit');
 
 /**
  * GET /users/me
@@ -99,6 +100,12 @@ async function getUser(req, res, { params }) {
  * We never reveal cleartext phone numbers.
  */
 async function discover(req, res) {
+  // Contact sync runs occasionally (on first launch + manual refresh). Cap it
+  // so the endpoint can't be abused to enumerate which phone numbers are Koro
+  // users. Keyed per user; generous enough for legitimate re-syncs.
+  const lim = check([{ key: `discover:${req.auth?.userId || 'anon'}`, max: 20, windowMs: 60 * 60 * 1000 }]);
+  if (!lim.ok) return send429(res, lim);
+
   const body = await readJson(req).catch(() => null);
   const hashes = Array.isArray(body?.phone_hashes) ? body.phone_hashes : null;
   if (!hashes) return badRequest(res, 'phone_hashes[] required');

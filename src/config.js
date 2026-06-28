@@ -89,6 +89,19 @@ module.exports = {
     devMode: !process.env.SMS_PROVIDER,
   },
 
+  // App-Store / Play-Store review bypass. App reviewers can't receive a real
+  // SMS OTP, so we whitelist ONE phone number that always logs in with a fixed
+  // code and never triggers an SMS. Active ONLY when BOTH env vars are set —
+  // leave them unset in normal production and this whole path is dead.
+  //   REVIEW_PHONE  e.g. +15555550123   (give Apple this number)
+  //   REVIEW_OTP    e.g. 000000         (give Apple this code)
+  // The number must still be a real users row (seed it once); only the OTP
+  // delivery + verification are short-circuited, nothing else is bypassed.
+  review: {
+    phone: process.env.REVIEW_PHONE || null,
+    otp: process.env.REVIEW_OTP || null,
+  },
+
   media: {
     bucket: process.env.MEDIA_BUCKET || 'koro-media',
     maxSizeBytes: int('MEDIA_MAX_BYTES', 25 * 1024 * 1024),
