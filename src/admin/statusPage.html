@@ -447,12 +447,13 @@ function summarize(j){
 
 function infra(d){
   let html='<div class="grid" style="margin-bottom:14px">';
-  html+=card(ic('server')+'API Instanzen','<div class="statrow">'+instList().map(i=>{
+  const instRows=instList().map(i=>{
     const stale=Date.now()-i.ts>20000;
     return '<div class="stat"><div class="big">'+(stale?'<span class="err-txt">offline</span>':'<span class="ok-txt">●</span> '+esc(i.instance))+'</div>'+
       '<div class="sub">up '+fmtDur(i.uptimeSec)+' · '+esc((i.version||'').slice(0,7))+'</div>'+
       '<div class="sub">'+fmtN(i.ws.sockets)+' sockets / '+fmtN(i.ws.devices)+' devices</div></div>';
-  }).join('')||'<span class="empty">keine Instanz</span>'+'</div>');
+  }).join('');
+  html+=card(ic('server')+'API Instanzen','<div class="statrow">'+(instRows||'<span class="empty">keine Instanz</span>')+'</div>');
   const rd=d.redis||{};
   html+=card('<span class="dot '+(rd.ok?'ok':'err')+'"></span>'+ic('redis')+'Redis',rd.ok
     ? kv('Ping',rd.pingMs+' ms')+kv('Version',esc(rd.version))+kv('Clients',rd.clients)+kv('Speicher',esc(rd.usedMemoryHuman))+kv('Ops/s',rd.opsPerSec)+kv('Uptime',fmtDur(+rd.uptimeSec))

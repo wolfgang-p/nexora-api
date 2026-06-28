@@ -112,10 +112,10 @@ const ACTIONS = {
     if (!call) throw new Error('call not found');
     if (call.ended_at) return { ended: id, alreadyEnded: true };
     const now = new Date().toISOString();
-    const started = call.started_at ? new Date(call.started_at).getTime() : null;
-    const dur = started ? Math.max(0, Math.round((Date.now() - started) / 1000)) : null;
+    // NB: duration_seconds is a GENERATED column (ended_at - started_at) —
+    // Postgres computes it; writing it would reject the whole UPDATE.
     const { error } = await supabase.from('calls')
-      .update({ ended_at: now, end_reason: 'admin_ended', duration_seconds: call.duration_seconds ?? dur })
+      .update({ ended_at: now, end_reason: 'admin_ended' })
       .eq('id', id);
     if (error) throw new Error(error.message);
     await broadcastCallEnded(call, 'admin_ended');
@@ -143,20 +143,23 @@ const ACTIONS = {
     const hours = Math.max(0.25, Math.min(48, Number(body.hours) || 2));
     const cutoff = new Date(Date.now() - hours * 3600 * 1000).toISOString();
     const { data: stuck } = await supabase.from('calls')
-      .select('id, conversation_id, started_at, duration_seconds')
+      .select('id, conversation_id, started_at')
       .is('ended_at', null).not('started_at', 'is', null).lt('started_at', cutoff)
       .limit(500);
     const list = stuck || [];
     if (!list.length) return { ended: 0 };
     const now = new Date().toISOString();
+    let ended = 0;
     for (const c of list) {
-      const dur = c.started_at ? Math.max(0, Math.round((Date.now() - new Date(c.started_at).getTime()) / 1000)) : null;
-      await supabase.from('calls')
-        .update({ ended_at: now, end_reason: 'admin_ended', duration_seconds: c.duration_seconds ?? dur })
-        .eq('id', c.id);
+      // duration_seconds is GENERATED — never write it (would reject the UPDATE).
+      const { error } = await supabase.from('calls')
+        .update({ ended_at: now, end_reason: 'admin_ended' })
+        .eq('id', c.id).is('ended_at', null);
+      if (error) continue;
+      ended += 1;
       await broadcastCallEnded(c, 'admin_ended');
     }
-    return { ended: list.length };
+    return { ended };
   },
 
   // Delete a finished call from history. Refuses to delete a live call —

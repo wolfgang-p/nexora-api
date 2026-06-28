@@ -252,11 +252,62 @@ async function list(req, res, { query }) {
 
 /**
  * POST /calls/:id/leave
+ *
+ * A participant (typically the callee) drops out. For a 1:1 call this means
+ * the call is over for everyone, so we end it and broadcast `call.ended` —
+ * otherwise the OTHER side (the initiator) would sit on a dead call forever,
+ * waiting on a flaky peer-connection-close to notice. For a group/huddle we
+ * only end the call once nobody is left.
  */
 async function leave(req, res, { params }) {
   await supabase.from('call_participants').update({ left_at: new Date().toISOString() })
     .eq('call_id', params.id).eq('user_id', req.auth.userId).eq('device_id', req.auth.deviceId);
-  ok(res, { ok: true });
+
+  const { data: call } = await supabase.from('calls').select('*').eq('id', params.id).maybeSingle();
+  if (!call || call.ended_at) return ok(res, { ok: true });
+
+  // Anyone besides the leaver still actively in the call?
+  const { data: parts } = await supabase.from('call_participants')
+    .select('user_id, device_id, left_at').eq('call_id', params.id);
+  const stillIn = (parts || []).filter((p) => !p.left_at
+    && !(p.user_id === req.auth.userId && p.device_id === req.auth.deviceId));
+  const others = stillIn.filter((p) => p.user_id !== call.initiator_user_id);
+
+  // End the call when the last non-initiator leaves (1:1 callee hangs up) or
+  // when nobody at all remains. The initiator simply leaving a still-populated
+  // group call does NOT end it.
+  const leaverIsInitiator = req.auth.userId === call.initiator_user_id;
+  const shouldEnd = stillIn.length === 0 || (!leaverIsInitiator && others.length === 0);
+  if (!shouldEnd) return ok(res, { ok: true });
+
+  const { data: updated } = await supabase.from('calls').update({
+    ended_at: new Date().toISOString(), end_reason: 'normal',
+  }).eq('id', params.id).is('ended_at', null).select('*').maybeSingle();
+  // Lost the race (someone else ended it first) — nothing more to do.
+  if (!updated) return ok(res, { ok: true });
+
+  const { data: members } = await supabase.from('conversation_members')
+    .select('user_id').eq('conversation_id', call.conversation_id).is('left_at', null);
+  const memberIds = (members || []).map((m) => m.user_id);
+  const { data: devs } = await supabase.from('devices')
+    .select('id').in('user_id', memberIds).is('revoked_at', null);
+  broadcastToDevices((devs || []).map((d) => d.id), () => ({
+    type: 'call.ended',
+    call_id: params.id,
+    end_reason: 'normal',
+  }));
+
+  try {
+    const { data: conv } = await supabase.from('conversations')
+      .select('workspace_id').eq('id', call.conversation_id).maybeSingle();
+    require('../webhooks/dispatcher').emit({
+      event: 'call.ended',
+      workspaceId: conv?.workspace_id || null,
+      payload: { call: updated },
+    });
+  } catch { /* swallow */ }
+
+  ok(res, { ok: true, ended: true });
 }
 
 /**
