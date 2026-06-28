@@ -282,12 +282,13 @@ async function collectAll() {
   ]);
 
   const presence = await sd.collectPresence(instances);
+  const sessions = await sd.collectSessions();
   const turn = sd.collectTurn();
   const deploy = sd.collectDeploy(instances);
   const apm = sd.collectApm();
   const rateLimit = sd.rateLimitStats();
   const scheduler = sd.schedulerStats();
-  const health = sd.computeHealth({ instances, redis, db, realtime, push, webhooks, scheduler, deploy });
+  const health = sd.computeHealth({ instances, redis, db, realtime, push, webhooks, scheduler, deploy, sessions });
 
   return {
     now: Date.now(),
@@ -300,6 +301,7 @@ async function collectAll() {
     git,
     realtime,
     presence,
+    sessions,
     push,
     webhooks,
     audit,

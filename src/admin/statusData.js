@@ -74,6 +74,62 @@ async function collectRealtime() {
   }
 }
 
+// ── Live & recent sessions (calls + meetings) for the Sessions tab ─────
+// Powers the "Sitzungen" management view: every list item carries the id +
+// enough context to render a row and target an end/delete action. A call or
+// meeting is "live" when started_at is set and ended_at is still null —
+// exactly the rows that can get stuck if a client crashes mid-call.
+async function collectSessions() {
+  try {
+    const now = Date.now();
+    const dayAgo = since(24 * 3600 * 1000);
+    const [liveCalls, liveMeetings, recentCalls, recentMeetings] = await Promise.all([
+      supabase.from('calls')
+        .select('id, conversation_id, kind, initiator_user_id, started_at, ended_at, end_reason')
+        .is('ended_at', null).not('started_at', 'is', null)
+        .order('started_at', { ascending: true }).limit(60),
+      supabase.from('meetings')
+        .select('id, room_id, title, host_user_id, host_name, started_at, ended_at, created_at')
+        .not('started_at', 'is', null).is('ended_at', null)
+        .order('started_at', { ascending: true }).limit(60),
+      supabase.from('calls')
+        .select('id, conversation_id, kind, initiator_user_id, started_at, ended_at, end_reason, duration_seconds')
+        .order('started_at', { ascending: false }).limit(25),
+      supabase.from('meetings')
+        .select('id, room_id, title, host_user_id, host_name, started_at, ended_at, created_at')
+        .order('created_at', { ascending: false }).limit(25),
+    ]);
+
+    // A live call running longer than ~2h almost certainly never got its
+    // ended_at written (crash / lost socket). Flag those so the dashboard can
+    // surface a "stuck" count and offer a one-click bulk cleanup.
+    const STUCK_MS = 2 * 3600 * 1000;
+    const live = (liveCalls.data || []).map((c) => ({
+      ...c,
+      ageSec: c.started_at ? Math.floor((now - new Date(c.started_at).getTime()) / 1000) : null,
+      stuck: c.started_at ? (now - new Date(c.started_at).getTime()) > STUCK_MS : false,
+    }));
+    const liveMtg = (liveMeetings.data || []).map((m) => ({
+      ...m,
+      ageSec: m.started_at ? Math.floor((now - new Date(m.started_at).getTime()) / 1000) : null,
+      stuck: m.started_at ? (now - new Date(m.started_at).getTime()) > STUCK_MS : false,
+    }));
+
+    return {
+      ok: true,
+      liveCalls: live,
+      liveMeetings: liveMtg,
+      recentCalls: recentCalls.data || [],
+      recentMeetings: recentMeetings.data || [],
+      stuckCalls: live.filter((c) => c.stuck).length,
+      stuckMeetings: liveMtg.filter((m) => m.stuck).length,
+      stuckThresholdSec: STUCK_MS / 1000,
+    };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
 // ── Presence: online devices/users across instances ───────────────────
 // Device-level online status lives in the WS layer; resolve to users via DB.
 async function collectPresence(instances) {
@@ -257,7 +313,7 @@ function collectApm() {
 }
 
 // ── Health score (composite traffic light) ─────────────────────────────
-function computeHealth({ instances, redis, db, realtime, push, webhooks, scheduler, deploy }) {
+function computeHealth({ instances, redis, db, realtime, push, webhooks, scheduler, deploy, sessions }) {
   const alerts = [];
   const now = Date.now();
   const fresh = Object.values(instances).filter((i) => now - i.ts < 20000);
@@ -281,6 +337,10 @@ function computeHealth({ instances, redis, db, realtime, push, webhooks, schedul
     alerts.push({ level: 'warn', text: `Anruf-Erfolgsquote ${(realtime.successRate * 100).toFixed(0)} %` });
   }
   if (deploy && deploy.drift) alerts.push({ level: 'warn', text: 'Version-Drift zwischen Instanzen' });
+  if (sessions && (sessions.stuckCalls > 0 || sessions.stuckMeetings > 0)) {
+    const n = (sessions.stuckCalls || 0) + (sessions.stuckMeetings || 0);
+    alerts.push({ level: 'warn', text: `${n} hängende Sitzung(en) — seit > 2 h offen` });
+  }
   if (scheduler && scheduler.lastTickAt && now - scheduler.lastTickAt > 90000) {
     alerts.push({ level: 'crit', text: 'Scheduler reagiert nicht (überfällig)' });
   }
@@ -294,7 +354,7 @@ function computeHealth({ instances, redis, db, realtime, push, webhooks, schedul
 }
 
 module.exports = {
-  collectRealtime, collectPresence, collectPush, collectWebhooks, collectAudit,
+  collectRealtime, collectSessions, collectPresence, collectPush, collectWebhooks, collectAudit,
   collectKpis, collectClients, collectTurn, collectDeploy, collectDbDepth, collectApm,
   computeHealth, rateLimitStats, schedulerStats: schedulerStatsFn,
 };
