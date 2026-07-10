@@ -237,16 +237,18 @@ r('GET', '/media/:id', mediaDownload.download, { auth: false });
 r('POST', '/media/:id/recipients', media.postRecipients);
 r('GET', '/media/:id/key', media.getMyKey);
 
-// --- Workspaces ---
-r('GET', '/workspaces', workspaces.list, { dualAuth: true });
-r('POST', '/workspaces', workspaces.create, { dualAuth: true });
-r('GET', '/workspaces/:id', workspaces.get, { dualAuth: true });
-r('PUT', '/workspaces/:id', workspaces.update, { dualAuth: true });
+// --- Workspaces (Spaces) ---
+// spaces:read = list/inspect the user's spaces + members; spaces:write =
+// create/update/invite/add-channel/join. destroy stays first-party-only.
+r('GET', '/workspaces', workspaces.list, { dualAuth: true, scope: 'spaces:read' });
+r('POST', '/workspaces', workspaces.create, { dualAuth: true, scope: 'spaces:write' });
+r('GET', '/workspaces/:id', workspaces.get, { dualAuth: true, scope: 'spaces:read' });
+r('PUT', '/workspaces/:id', workspaces.update, { dualAuth: true, scope: 'spaces:write' });
 r('DELETE', '/workspaces/:id', workspaces.destroy);
-r('POST', '/workspaces/:id/invites', workspaces.createInvite, { dualAuth: true });
+r('POST', '/workspaces/:id/invites', workspaces.createInvite, { dualAuth: true, scope: 'spaces:write' });
 r('POST', '/workspaces/:id/invite-by-contact', workspaces.inviteByContact);
-r('POST', '/workspaces/:id/channels', workspaces.createChannel, { dualAuth: true });
-r('POST', '/workspaces/join', workspaces.joinByCode);
+r('POST', '/workspaces/:id/channels', workspaces.createChannel, { dualAuth: true, scope: 'spaces:write' });
+r('POST', '/workspaces/join', workspaces.joinByCode, { dualAuth: true, scope: 'spaces:write' });
 
 // --- Tasks ---
 r('GET', '/tasks', tasks.list, { dualAuth: true, scope: 'tasks:read' });
@@ -260,14 +262,17 @@ r('POST', '/tasks/:id/timer/start', tasks.startTimer);
 r('POST', '/tasks/:id/timer/stop',  tasks.stopTimer);
 
 // --- Calls ---
-r('GET', '/calls', calls.list);
-r('GET', '/calls/ice-servers', calls.iceServers);
-r('GET', '/calls/:id', calls.get);
-r('POST', '/calls', calls.start);
-r('POST', '/calls/:id/join', calls.join);
-r('POST', '/calls/:id/reject', calls.reject);
-r('POST', '/calls/:id/leave', calls.leave);
-r('POST', '/calls/:id/end', calls.end);
+// dualAuth + OAuth scopes so "Login with Koro" apps can see & manage the
+// user's calls. read = history/lifecycle inspection, write = start/join/leave/
+// reject/end + ICE servers (needed to actually place a call).
+r('GET', '/calls', calls.list, { dualAuth: true, scope: 'calls:read' });
+r('GET', '/calls/ice-servers', calls.iceServers, { dualAuth: true, scope: 'calls:write' });
+r('GET', '/calls/:id', calls.get, { dualAuth: true, scope: 'calls:read' });
+r('POST', '/calls', calls.start, { dualAuth: true, scope: 'calls:write' });
+r('POST', '/calls/:id/join', calls.join, { dualAuth: true, scope: 'calls:write' });
+r('POST', '/calls/:id/reject', calls.reject, { dualAuth: true, scope: 'calls:write' });
+r('POST', '/calls/:id/leave', calls.leave, { dualAuth: true, scope: 'calls:write' });
+r('POST', '/calls/:id/end', calls.end, { dualAuth: true, scope: 'calls:write' });
 
 // --- Webhooks ---
 r('GET', '/webhooks', webhooksReg.list, { dualAuth: true, scope: 'webhooks:manage' });
@@ -475,12 +480,14 @@ r('PUT',    '/workspaces/:id/pages/:page_id',   wiki.update);
 r('DELETE', '/workspaces/:id/pages/:page_id',   wiki.destroy);
 
 // Workspace member directory + role/permission management
-r('GET',    '/workspaces/:id/members',             wsMembers.list);
+// Reading the member directory is part of spaces:read; role/permission
+// mutations stay first-party-only (admin actions, not delegated to apps).
+r('GET',    '/workspaces/:id/members',             wsMembers.list, { dualAuth: true, scope: 'spaces:read' });
 r('PUT',    '/workspaces/:id/members/:user_id',    wsMembers.update);
 r('DELETE', '/workspaces/:id/members/:user_id',    wsMembers.remove);
 
 // Workspace-wide search
-r('GET',    '/workspaces/:id/search',           wsSearch.search);
+r('GET',    '/workspaces/:id/search',           wsSearch.search, { dualAuth: true, scope: 'spaces:read' });
 
 // --- Admin: reports moderation ---
 r('GET',    '/admin/reports',             reports.adminListReports,  { admin: true });
