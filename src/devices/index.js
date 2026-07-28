@@ -162,7 +162,61 @@ async function registerPushToken(req, res) {
   ok(res, { ok: true });
 }
 
+/**
+ * POST /devices/:id/request-history   (self)
+ *
+ * A freshly linked device (e.g. the /koro web client) that finds it can't
+ * decrypt old history stamps itself as "needs history sync". Another device of
+ * the same user that CAN decrypt (the phone) later reads this and re-seals the
+ * history to it (POST /messages/:id/recipients), then clears the stamp. The
+ * caller may only stamp its OWN device.
+ */
+async function requestHistory(req, res, { params }) {
+  const { data: device } = await supabase
+    .from('devices').select('id, user_id').eq('id', params.id).maybeSingle();
+  if (!device || device.user_id !== req.auth.userId) return notFound(res, 'Device not found');
+
+  await supabase.from('devices')
+    .update({ history_requested_at: new Date().toISOString() })
+    .eq('id', params.id);
+  ok(res, { ok: true });
+}
+
+/**
+ * GET /devices/history-requests   (self)
+ *
+ * Returns this user's OWN devices that have a pending history request (other
+ * than the caller itself), with their public keys — so the phone knows which
+ * devices to re-seal history to.
+ */
+async function listHistoryRequests(req, res) {
+  const { data: devices } = await supabase
+    .from('devices')
+    .select('id, label, identity_public_key, history_requested_at')
+    .eq('user_id', req.auth.userId)
+    .is('revoked_at', null)
+    .not('history_requested_at', 'is', null)
+    .neq('id', req.auth.deviceId);
+  ok(res, { devices: devices || [] });
+}
+
+/**
+ * DELETE /devices/:id/request-history   (self)
+ * Clears the pending flag — called by the phone once it has synced history to
+ * the target device.
+ */
+async function clearHistoryRequest(req, res, { params }) {
+  const { data: device } = await supabase
+    .from('devices').select('id, user_id').eq('id', params.id).maybeSingle();
+  if (!device || device.user_id !== req.auth.userId) return notFound(res, 'Device not found');
+
+  await supabase.from('devices')
+    .update({ history_requested_at: null })
+    .eq('id', params.id);
+  ok(res, { ok: true });
+}
+
 module.exports = {
   listOwnDevices, listConversationDevices, revokeDevice, updateDevice,
-  registerPushToken,
+  registerPushToken, requestHistory, listHistoryRequests, clearHistoryRequest,
 };

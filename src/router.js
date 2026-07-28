@@ -23,6 +23,7 @@ const messagesList = require('./messages/list');
 const messagesRead = require('./messages/read');
 const messagesDelete = require('./messages/delete');
 const messagesEdit = require('./messages/edit');
+const messagesBackfill = require('./messages/backfill');
 const reactions = require('./reactions');
 const media = require('./media/upload');
 const mediaDownload = require('./media/download');
@@ -166,6 +167,12 @@ r('DELETE', '/users/:id/block', users.unblock);
 
 // --- Devices ---
 r('GET', '/devices', devices.listOwnDevices);
+// History-sync signalling. Literal paths registered before '/devices/:id' so
+// they aren't captured as an :id. request-history is dualAuth so the /koro
+// OAuth device can stamp itself; history-requests is phone-only (regular auth).
+r('GET', '/devices/history-requests', devices.listHistoryRequests);
+r('POST', '/devices/:id/request-history', devices.requestHistory, { dualAuth: true, scope: 'conversations:read' });
+r('DELETE', '/devices/:id/request-history', devices.clearHistoryRequest);
 r('PUT', '/devices/:id', devices.updateDevice);
 r('DELETE', '/devices/:id', devices.revokeDevice);
 r('POST', '/devices/push-token', devices.registerPushToken);
@@ -191,6 +198,9 @@ r('POST', '/messages/:id/delivered', messagesRead.markDelivered);
 r('POST', '/messages/:id/read', messagesRead.markRead);
 r('DELETE', '/messages/:id', messagesDelete.deleteMessage);
 r('PUT', '/messages/:id', messagesEdit.editMessage);
+// Add sealed copies of an existing message for the caller's OWN other devices
+// (history sync to a newly linked device — see messages/backfill.js).
+r('POST', '/messages/:id/recipients', messagesBackfill.addRecipients, { dualAuth: true, scope: 'messages:write' });
 
 // --- Scheduled messages ---
 r('GET',    '/messages/scheduled',     messagesScheduled.list);
