@@ -173,6 +173,21 @@ async function approve(req, res, { params }) {
     return badRequest(res, 'identity_public_key has unreasonable length');
   }
 
+  // Revoke this user's PRIOR oauth devices for the SAME client before creating a
+  // new one. Reconnecting otherwise accumulates stale oauth devices that clog
+  // the history-request list and the sibling-copy fallback, and can strand the
+  // phone re-sealing to dead targets. Scoped by the client-specific label so we
+  // never touch the user's phone or other apps' devices.
+  {
+    const label = `Login mit Koro · ${client.name}`.slice(0, 80);
+    await supabase.from('devices')
+      .update({ revoked_at: new Date().toISOString(), revoked_reason: 'oauth_reconnect', history_requested_at: null })
+      .eq('user_id', req.auth.userId)
+      .eq('kind', 'oauth')
+      .eq('label', label)
+      .is('revoked_at', null);
+  }
+
   // Provision the per-grant device (owned by the consenting user).
   const { data: device, error: devErr } = await supabase.from('devices').insert({
     user_id: req.auth.userId,

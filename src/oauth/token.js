@@ -130,6 +130,10 @@ async function exchangeCode(req, res, body, client) {
     refresh_token: refreshToken,
     scope: scopes.join(' '),
     user: user || null,
+    // The per-grant device id. A confidential client (e.g. the /koro web
+    // module) stores this so it can later address per-device operations —
+    // notably re-keying onto the stable user key and requesting a history sync.
+    device_id: grant.device_id,
     // The user's sealed device secret (if the app supplied an ephemeral key at
     // authorize time) so the developer can derive the E2E secret to OPEN sealed
     // message copies addressed to the per-grant device.
@@ -191,6 +195,7 @@ async function refresh(req, res, body, client) {
     expires_in: config.oauth.accessTtl,
     refresh_token: refreshToken,
     scope: scopes.join(' '),
+    device_id: tok.device_id,
   });
 }
 
