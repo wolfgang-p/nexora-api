@@ -16,13 +16,27 @@ async function isWsAdmin(userId, workspaceId) {
   return !!me && ['owner', 'admin'].includes(me.role);
 }
 
+const { isWildcardPattern } = require('./redirectMatch');
+
 function validRedirectUris(arr) {
   if (!Array.isArray(arr)) return null;
   const out = [];
-  for (const u of arr) {
-    if (typeof u !== 'string' || !u.trim()) continue;
+  for (const raw of arr) {
+    if (typeof raw !== 'string' || !raw.trim()) continue;
+    const u = raw.trim();
+
+    // Single-left-label wildcard (https://*.example.com/path). Validate by
+    // substituting a placeholder label so URL() can parse it, then store the
+    // ORIGINAL "*."-form string (not the normalized placeholder). isWildcardPattern
+    // already enforces https + a non-bare base host + no '*' in scheme/port/path.
+    if (u.includes('*')) {
+      if (!isWildcardPattern(u)) return null;   // reject any unsafe wildcard shape
+      out.push(u);
+      continue;
+    }
+
     let parsed;
-    try { parsed = new URL(u.trim()); } catch { return null; }
+    try { parsed = new URL(u); } catch { return null; }
     // Allow https everywhere; http only for localhost (dev).
     const isLocal = ['localhost', '127.0.0.1'].includes(parsed.hostname);
     if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLocal)) return null;

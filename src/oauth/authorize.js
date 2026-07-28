@@ -33,14 +33,27 @@ async function authorize(req, res) {
     .eq('client_id', body.client_id).maybeSingle();
   if (!client || client.revoked_at) return notFound(res, 'Unknown client_id');
 
-  // Validate redirect_uri against the registered allow-list.
+  // Validate redirect_uri against the registered allow-list. Registered entries
+  // may be exact URLs or a single-left-label wildcard (https://*.example.com/…);
+  // redirectUriMatches() enforces the safe pattern rules. The CONCRETE incoming
+  // redirect_uri (never the wildcard) is what gets stored on the grant and used
+  // downstream.
+  const { redirectUriMatches, isWildcardPattern } = require('./redirectMatch');
   let redirectUri = body.redirect_uri || null;
   if (redirectUri) {
-    if (!client.redirect_uris.includes(redirectUri)) {
+    if (!redirectUriMatches(client.redirect_uris, redirectUri)) {
       return badRequest(res, 'redirect_uri not registered for this client');
     }
-  } else if (client.redirect_uris.length === 1) {
-    redirectUri = client.redirect_uris[0];
+  } else {
+    // No explicit redirect_uri: only auto-pick when there is exactly one
+    // registered entry AND it is a concrete URL (never a wildcard — we must not
+    // store the literal "*." pattern as the redirect target).
+    const concrete = client.redirect_uris.filter((u) => !isWildcardPattern(u));
+    if (concrete.length === 1 && client.redirect_uris.length === 1) {
+      redirectUri = concrete[0];
+    } else {
+      return badRequest(res, 'redirect_uri is required for this client');
+    }
   }
 
   // Requested scopes must be a subset of what the app registered.
