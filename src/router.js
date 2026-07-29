@@ -406,6 +406,12 @@ r('POST',   '/meetings/:roomId/pdf-upload',     meetings.uploadPdf,     { auth: 
 r('POST',   '/meetings/:roomId/recording-chunk', meetings.recordingChunk, { auth: false, optionalAuth: true });
 r('GET',    '/meetings/:roomId/analysis',       meetings.getAnalysis,   { auth: false, optionalAuth: true });
 r('POST',   '/meetings/:roomId/analysis/retry', meetings.retryAnalysis, { auth: false, optionalAuth: true });
+// Shared collaborative notes (live-synced over WS; these persist the doc).
+r('GET',    '/meetings/:roomId/notes',          meetings.getNotes,      { auth: false, optionalAuth: true });
+r('PUT',    '/meetings/:roomId/notes',          meetings.putNotes,      { auth: false, optionalAuth: true });
+// Full host recording (camera + screen + all audio, host-mixed).
+r('POST',   '/meetings/:roomId/full-recording-chunk',    meetings.fullRecordingChunk,    { auth: false, optionalAuth: true });
+r('POST',   '/meetings/:roomId/full-recording-finalize', meetings.fullRecordingFinalize, { auth: false, optionalAuth: true });
 
 // --- koro.bio (LinkTree) ---
 r('GET',    '/bio/me',                       bio.getMine);

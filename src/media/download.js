@@ -48,12 +48,57 @@ async function download(req, res, { params }) {
   try { stat = await fsp.stat(abs); }
   catch { return notFound(res, 'File missing'); }
 
+  const cacheControl = media.conversation_id
+    ? 'private, max-age=31536000, immutable'
+    : 'public, max-age=31536000, immutable';
+
+  // Range support — needed for <video>/<audio> seeking (the meeting full
+  // recording is served here). A player sends `Range: bytes=start-end`; we reply
+  // 206 with just that slice so scrubbing works instead of downloading the whole
+  // file. Falls back to a normal 200 full-stream when no Range header is present.
+  const range = req.headers['range'];
+  if (range) {
+    const m = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+    if (m) {
+      let start;
+      let end;
+      if (m[1] === '' && m[2] !== '') {
+        // Suffix range `bytes=-N` → the LAST N bytes.
+        const n = parseInt(m[2], 10);
+        start = Number.isNaN(n) ? 0 : Math.max(0, stat.size - n);
+        end = stat.size - 1;
+      } else {
+        start = m[1] === '' ? 0 : parseInt(m[1], 10);
+        end = m[2] === '' ? stat.size - 1 : parseInt(m[2], 10);
+        if (Number.isNaN(start)) start = 0;
+        if (Number.isNaN(end) || end >= stat.size) end = stat.size - 1;
+      }
+      if (start > end || start >= stat.size) {
+        res.writeHead(416, { 'Content-Range': `bytes */${stat.size}` });
+        return res.end();
+      }
+      res.writeHead(206, {
+        'Content-Type': media.mime_type,
+        'Content-Length': end - start + 1,
+        'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': cacheControl,
+        'X-Content-Type-Options': 'nosniff',
+      });
+      try {
+        await pipeline(fs.createReadStream(abs, { start, end }), res);
+      } catch {
+        if (!res.writableEnded) { try { res.end(); } catch { /* ignore */ } }
+      }
+      return;
+    }
+  }
+
   res.writeHead(200, {
     'Content-Type': media.mime_type,
     'Content-Length': stat.size,
-    'Cache-Control': media.conversation_id
-      ? 'private, max-age=31536000, immutable'
-      : 'public, max-age=31536000, immutable',
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': cacheControl,
     'X-Content-Type-Options': 'nosniff',
   });
   try {

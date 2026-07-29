@@ -41,6 +41,12 @@ const { buildIceServers } = require('../calls/ice');
 const REC_CHUNK_MAX_BYTES = 8 * 1024 * 1024;
 const REC_TOTAL_MAX_BYTES = 300 * 1024 * 1024;
 
+// FULL host recording (video+audio of the whole meeting) — much larger. A chunk
+// is a few seconds of VP8/Opus; the total cap is generous ("no time limit" in
+// practice) but bounded so a runaway can't fill the disk. ~4 GB ≈ many hours.
+const FULLREC_CHUNK_MAX_BYTES = 32 * 1024 * 1024;
+const FULLREC_TOTAL_MAX_BYTES = 4 * 1024 * 1024 * 1024;
+
 // Unlisted share slug for the analysis page. base58-ish, ~22 chars.
 const SHARE_ALPHA = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 function newShareToken() {
@@ -1044,13 +1050,15 @@ async function ensureAnalysisPending(meetingId) {
 
 /** Shape a full analysis payload (durations + summary + transcript timeline). */
 async function buildAnalysisPayload(meeting, analysis) {
-  const [{ data: participants }, { data: segments }] = await Promise.all([
+  const [{ data: participants }, { data: segments }, { data: notesRow }] = await Promise.all([
     supabase.from('meeting_participants')
       .select('display_name, device_id, user_id, is_host, joined_at, left_at')
       .eq('meeting_id', meeting.id).order('joined_at', { ascending: true }),
     supabase.from('meeting_transcripts')
       .select('speaker_display_name, speaker_device_id, text, started_offset_ms, ended_offset_ms')
       .eq('meeting_id', meeting.id).order('started_offset_ms', { ascending: true }),
+    supabase.from('meeting_notes')
+      .select('content').eq('meeting_id', meeting.id).maybeSingle(),
   ]);
 
   // Collapse reconnect rows into one duration per speaker.
@@ -1090,6 +1098,12 @@ async function buildAnalysisPayload(meeting, analysis) {
       text: s.text,
       offset_ms: Number(s.started_offset_ms) || 0,
     })),
+    notes: (notesRow?.content || '').trim() || null,
+    full_recording: analysis.full_recording_media_id
+      ? { media_id: analysis.full_recording_media_id, status: analysis.full_recording_status || 'ready' }
+      : (analysis.full_recording_status && analysis.full_recording_status !== 'none'
+          ? { media_id: null, status: analysis.full_recording_status }
+          : null),
     share_token: analysis.share_token,
   };
 }
@@ -1154,10 +1168,138 @@ async function retryAnalysis(req, res, { params }) {
   ok(res, { ok: true, status: 'pending' });
 }
 
+// ── Shared collaborative notes ────────────────────────────────────────────
+
+/**
+ * GET /meetings/:roomId/notes   (auth or guest participant)
+ * Returns the current shared notes document. Late-joiners load this to sync.
+ */
+async function getNotes(req, res, { params }) {
+  const { data: meeting } = await supabase.from('meetings')
+    .select('id').eq('room_id', params.roomId).maybeSingle();
+  if (!meeting) return notFound(res);
+  const { data: row } = await supabase.from('meeting_notes')
+    .select('content, updated_at').eq('meeting_id', meeting.id).maybeSingle();
+  ok(res, { content: row?.content || '', updated_at: row?.updated_at || null });
+}
+
+/**
+ * PUT /meetings/:roomId/notes   { content }   (auth or guest participant)
+ * Persist the shared notes (last-write-wins). The client debounces this; live
+ * typing sync happens over WS (meet.broadcast subtype:'notes'), this is just the
+ * durable copy that feeds the analysis page.
+ */
+async function putNotes(req, res, { params }) {
+  const body = await readJson(req).catch(() => null) || {};
+  const actor = actorFor(req, body);
+  const content = typeof body.content === 'string' ? body.content.slice(0, 100000) : '';
+
+  const { data: meeting } = await supabase.from('meetings')
+    .select('id').eq('room_id', params.roomId).maybeSingle();
+  if (!meeting) return notFound(res);
+
+  const { error } = await supabase.from('meeting_notes').upsert({
+    meeting_id: meeting.id,
+    content,
+    updated_by: actor.displayName || null,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'meeting_id' });
+  if (error) return serverError(res, 'Notes save failed', error);
+  ok(res, { ok: true });
+}
+
+// ── Full host recording (camera + screen + everyone's audio) ──────────────
+
+/**
+ * POST /meetings/:roomId/full-recording-chunk   (host only)
+ * Streams one MediaRecorder timeslice of the host-mixed full recording (one
+ * combined video), appended to uploads/meetings/<id>/full.webm. Query: ?first=1.
+ * Deliberately SEPARATE from the per-speaker recording path so the big file
+ * isn't subject to the per-speaker caps / retention / auto-delete.
+ */
+async function fullRecordingChunk(req, res, { params, query }) {
+  const meeting = await assertHost(req, res, params.roomId);
+  if (!meeting) return;
+
+  const isFirst = query?.first === '1' || req.headers['x-rec-first'] === '1';
+  const p = planRecording(meeting.id, 'full', 'webm');
+
+  let buf;
+  try { buf = await readRawBody(req, FULLREC_CHUNK_MAX_BYTES); }
+  catch (err) { return serverError(res, 'Chunk read failed', err); }
+
+  // Cap check against the file's current size.
+  let curSize = 0;
+  try { curSize = (await fsp.stat(p.absPath)).size; } catch { /* not created yet */ }
+  if (curSize >= FULLREC_TOTAL_MAX_BYTES) {
+    console.warn(`[meet.fullrec] cap reached for ${p.storageKey}`);
+    return ok(res, { ok: true, capped: true });
+  }
+
+  if (buf.length > 0) {
+    try { await appendChunk(p.absPath, buf); }
+    catch (err) { return serverError(res, 'Chunk write failed', err); }
+  }
+
+  if (isFirst) {
+    // Mark the analysis row as recording (create it if the meeting hasn't ended
+    // yet — ensureAnalysisPending is safe to call and returns the share token).
+    await ensureAnalysisPending(meeting.id).catch(() => {});
+    await supabase.from('meeting_analysis')
+      .update({ full_recording_status: 'recording', updated_at: new Date().toISOString() })
+      .eq('meeting_id', meeting.id);
+  }
+  ok(res, { ok: true });
+}
+
+/**
+ * POST /meetings/:roomId/full-recording-finalize   (host only)
+ * Registers the finished full.webm as a public media_objects row and points the
+ * analysis at it (status → ready). If no file exists, marks failed.
+ */
+async function fullRecordingFinalize(req, res, { params }) {
+  const meeting = await assertHost(req, res, params.roomId);
+  if (!meeting) return;
+
+  await ensureAnalysisPending(meeting.id).catch(() => {});
+
+  const p = planRecording(meeting.id, 'full', 'webm');
+  let size = 0;
+  try { size = (await fsp.stat(p.absPath)).size; }
+  catch {
+    await supabase.from('meeting_analysis')
+      .update({ full_recording_status: 'failed', updated_at: new Date().toISOString() })
+      .eq('meeting_id', meeting.id);
+    return badRequest(res, 'No recording file');
+  }
+
+  // Register as a publicly-servable media object (conversation_id NULL → served
+  // by /media/:id without auth, same as meeting PDFs/avatars).
+  const { data: media, error: insErr } = await supabase.from('media_objects').insert({
+    uploader_user_id: req.auth?.userId || null,
+    uploader_device_id: req.auth?.deviceId || null,
+    conversation_id: null,
+    storage_key: p.storageKey,
+    mime_type: 'video/webm',
+    size_bytes: size,
+  }).select('id').single();
+  if (insErr) return serverError(res, 'Could not register recording', insErr);
+
+  await supabase.from('meeting_analysis')
+    .update({
+      full_recording_media_id: media.id,
+      full_recording_status: 'ready',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('meeting_id', meeting.id);
+
+  ok(res, { ok: true, media_id: media.id });
+}
+
 module.exports = {
   create, listMine, getOne, iceServers, join, leave, update, destroy,
   listMessages, postMessage,
   startNow, kickParticipant, setPdf, clearPdf, uploadPdf, endMeeting,
   recordingChunk, getAnalysis, getSharedAnalysis, ensureAnalysisPending,
-  retryAnalysis,
+  retryAnalysis, getNotes, putNotes, fullRecordingChunk, fullRecordingFinalize,
 };
