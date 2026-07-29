@@ -53,11 +53,12 @@ async function loop() {
 }
 
 function sleep(ms) {
-  return new Promise((resolve) => {
-    const t = setTimeout(resolve, ms);
-    // Don't keep the process alive purely for a pending idle timer on shutdown.
-    if (typeof t.unref === 'function') t.unref();
-  });
+  // NOTE: do NOT unref() this timer. During an idle poll (no active job) this
+  // pending timer is the only thing keeping the event loop alive; unref'ing it
+  // let Node think there was nothing left to do and EXIT the process — which
+  // made the worker container restart-loop every ~15s. The SIGTERM/SIGINT
+  // handlers already flip `stopping` so the loop exits cleanly on shutdown.
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
