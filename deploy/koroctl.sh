@@ -389,6 +389,43 @@ do_voip() {
   elif [ "${count:-0}" -gt 0 ] 2>/dev/null; then ok "$count Gerät(e) mit voip_token registriert"
   else err "0 Geräte mit voip_token! Die App hat PushKit nie registriert → kein Killed-App-Klingeln. (PushKit-Build? Nach Login eingeloggt?)"; fi
 
+  # Gegencheck für DIESE Nummer: hat das Gerät wenigstens einen REGULÄREN Push-
+  # Token? Trennt "App redet gar nicht mit dem Server / falscher Build" von
+  # "nur der VoIP-Teil funktioniert nicht".
+  local ck_phone="${1:-}"
+  if [ -n "$ck_phone" ]; then
+    local reg
+    reg="$(docker exec "$inst" node -e '
+      (async () => {
+        const { supabase } = require("./src/db/supabase");
+        const { data: u } = await supabase.from("users").select("id").eq("phone_e164", process.argv[1]).maybeSingle();
+        if (!u) { console.log("NOUSER"); process.exit(0); }
+        const { data: devs } = await supabase.from("devices").select("id,platform,last_seen_at").eq("user_id", u.id).is("revoked_at", null);
+        const ids = (devs||[]).map(d => d.id);
+        const { data: pt } = ids.length ? await supabase.from("push_tokens").select("device_id,token,voip_token,platform").in("device_id", ids) : { data: [] };
+        const reg = (pt||[]).filter(t => t.token).length;
+        const voip = (pt||[]).filter(t => t.voip_token).length;
+        console.log(JSON.stringify({ devices: ids.length, regularPush: reg, voip }));
+        process.exit(0);
+      })().catch(e => { console.log("ERR:"+(e&&e.message||e)); process.exit(0); });
+    ' "$ck_phone" 2>/dev/null)"
+    if printf "%s" "$reg" | grep -q "regularPush"; then
+      local nd nr nv
+      nd="$(printf "%s" "$reg" | sed -E "s/.*\"devices\":([0-9]+).*/\1/")"
+      nr="$(printf "%s" "$reg" | sed -E "s/.*\"regularPush\":([0-9]+).*/\1/")"
+      nv="$(printf "%s" "$reg" | sed -E "s/.*\"voip\":([0-9]+).*/\1/")"
+      info "Für $ck_phone: aktive Geräte=$nd · regulärer Push=$nr · VoIP=$nv"
+      if [ "${nr:-0}" -gt 0 ] 2>/dev/null && [ "${nv:-0}" -eq 0 ] 2>/dev/null; then
+        warn "→ App redet MIT dem Server (regulärer Push da), aber iOS liefert KEINEN VoIP-Token."
+        warn "  Das ist fast immer die fehlende Push-Notifications-Capability im Provisioning-Profil."
+      elif [ "${nr:-0}" -eq 0 ] 2>/dev/null; then
+        warn "→ NICHT MAL ein regulärer Push-Token! Entweder Notifications nicht erlaubt, alter Build, oder App erreicht /devices/push-token nicht."
+      fi
+    else
+      info "Gegencheck: ${reg:-<keine Antwort>}"
+    fi
+  fi
+
   # ── 3) Optionaler echter Test-Push ───────────────────────────────────────
   phase "3/3  Echter VoIP-Test-Push"
   local phone="${1:-}"
