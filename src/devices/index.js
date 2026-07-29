@@ -1,7 +1,7 @@
 'use strict';
 
 const { supabase } = require('../db/supabase');
-const { ok, forbidden, notFound } = require('../util/response');
+const { ok, forbidden, notFound, serverError } = require('../util/response');
 const { audit } = require('../util/audit');
 const { disconnectDevice } = require('../ws/dispatch');
 
@@ -145,7 +145,13 @@ async function updateDevice(req, res, { params }) {
 async function registerPushToken(req, res) {
   const { readJson, badRequest } = require('../util/response');
   const body = await readJson(req).catch(() => null);
-  if (!body?.token && !body?.voip_token) return badRequest(res, 'token or voip_token required');
+  // TEMP DIAGNOSTIC: surface exactly what the server received, so a client that
+  // reports "uploaded ✓" but leaves voip_token null in the DB is explained.
+  console.log(`[push-token] device=${req.auth?.deviceId} hasToken=${!!body?.token} hasVoip=${!!body?.voip_token} platform=${body?.platform || req.headers['x-platform']}`);
+  if (!body?.token && !body?.voip_token) {
+    console.warn('[push-token] REJECTED: empty body (no token, no voip_token) — body was:', JSON.stringify(body));
+    return badRequest(res, 'token or voip_token required');
+  }
 
   // Patch only the columns the client actually provided so a subsequent
   // VoIP-only registration (issued lazily after PushKit init) doesn't
@@ -158,7 +164,12 @@ async function registerPushToken(req, res) {
   if (body.token)      patch.token = body.token;
   if (body.voip_token) patch.voip_token = body.voip_token;
 
-  await supabase.from('push_tokens').upsert(patch, { onConflict: 'device_id' });
+  const { error } = await supabase.from('push_tokens').upsert(patch, { onConflict: 'device_id' });
+  if (error) {
+    console.error('[push-token] UPSERT FAILED:', error.message, '— patch was:', JSON.stringify({ ...patch, token: patch.token ? '…' : undefined, voip_token: patch.voip_token ? '…' : undefined }));
+    return serverError(res, 'Failed to save push token');
+  }
+  console.log(`[push-token] SAVED device=${req.auth.deviceId} voip=${!!patch.voip_token} reg=${!!patch.token}`);
   ok(res, { ok: true });
 }
 
