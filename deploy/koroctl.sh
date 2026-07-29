@@ -394,35 +394,52 @@ do_voip() {
   # "nur der VoIP-Teil funktioniert nicht".
   local ck_phone="${1:-}"
   if [ -n "$ck_phone" ]; then
+    # Volles Bild aus der DB (inkl. widerrufener Geräte), eine saubere JSON-Zeile.
+    # DOTENV_CONFIG_QUIET unterdrückt den kosmetischen dotenv-Banner; NODE_NO_WARNINGS
+    # hält die stdout-Ausgabe rein, damit die JSON-Zeile parsebar bleibt.
     local reg
-    reg="$(docker exec "$inst" node -e '
+    reg="$(docker exec -e DOTENV_CONFIG_QUIET=true -e NODE_NO_WARNINGS=1 "$inst" node -e '
       (async () => {
         const { supabase } = require("./src/db/supabase");
-        const { data: u } = await supabase.from("users").select("id").eq("phone_e164", process.argv[1]).maybeSingle();
-        if (!u) { console.log("NOUSER"); process.exit(0); }
-        const { data: devs } = await supabase.from("devices").select("id,platform,last_seen_at").eq("user_id", u.id).is("revoked_at", null);
-        const ids = (devs||[]).map(d => d.id);
-        const { data: pt } = ids.length ? await supabase.from("push_tokens").select("device_id,token,voip_token,platform").in("device_id", ids) : { data: [] };
-        const reg = (pt||[]).filter(t => t.token).length;
-        const voip = (pt||[]).filter(t => t.voip_token).length;
-        console.log(JSON.stringify({ devices: ids.length, regularPush: reg, voip }));
+        const phone = process.argv[1];
+        const { data: u } = await supabase.from("users").select("id,display_name").eq("phone_e164", phone).maybeSingle();
+        if (!u) { console.log(JSON.stringify({ error: "NOUSER", phone })); process.exit(0); }
+        const { data: allDevs } = await supabase.from("devices").select("id,platform,kind,revoked_at,last_seen_at").eq("user_id", u.id);
+        const active = (allDevs||[]).filter(d => !d.revoked_at);
+        const revoked = (allDevs||[]).filter(d => d.revoked_at);
+        const activeIds = active.map(d => d.id);
+        const { data: pt } = activeIds.length ? await supabase.from("push_tokens").select("device_id,token,voip_token,platform").in("device_id", activeIds) : { data: [] };
+        console.log(JSON.stringify({
+          user: u.display_name || u.id,
+          activeDevices: active.length,
+          revokedDevices: revoked.length,
+          activeByPlatform: active.reduce((m,d)=>{m[d.platform||"?"]=(m[d.platform||"?"]||0)+1;return m;},{}),
+          regularPush: (pt||[]).filter(t=>t.token).length,
+          voip: (pt||[]).filter(t=>t.voip_token).length,
+        }));
         process.exit(0);
-      })().catch(e => { console.log("ERR:"+(e&&e.message||e)); process.exit(0); });
-    ' "$ck_phone" 2>/dev/null)"
-    if printf "%s" "$reg" | grep -q "regularPush"; then
-      local nd nr nv
-      nd="$(printf "%s" "$reg" | sed -E "s/.*\"devices\":([0-9]+).*/\1/")"
-      nr="$(printf "%s" "$reg" | sed -E "s/.*\"regularPush\":([0-9]+).*/\1/")"
-      nv="$(printf "%s" "$reg" | sed -E "s/.*\"voip\":([0-9]+).*/\1/")"
-      info "Für $ck_phone: aktive Geräte=$nd · regulärer Push=$nr · VoIP=$nv"
-      if [ "${nr:-0}" -gt 0 ] 2>/dev/null && [ "${nv:-0}" -eq 0 ] 2>/dev/null; then
-        warn "→ App redet MIT dem Server (regulärer Push da), aber iOS liefert KEINEN VoIP-Token."
-        warn "  Das ist fast immer die fehlende Push-Notifications-Capability im Provisioning-Profil."
+      })().catch(e => { console.log(JSON.stringify({ error: String(e&&e.message||e) })); process.exit(0); });
+    ' "$ck_phone" 2>/dev/null | grep "^{" | tail -1)"
+
+    if printf "%s" "$reg" | grep -q '"error":"NOUSER"'; then
+      err "Kein User mit phone_e164=$ck_phone gefunden. Nummer exakt im +E164-Format? (z.B. +436609242214)"
+    elif printf "%s" "$reg" | grep -q '"activeDevices"'; then
+      info "Für $ck_phone:  ${reg}"
+      local nad nr nv
+      nad="$(printf "%s" "$reg" | sed -E 's/.*"activeDevices":([0-9]+).*/\1/')"
+      nr="$(printf "%s" "$reg" | sed -E 's/.*"regularPush":([0-9]+).*/\1/')"
+      nv="$(printf "%s" "$reg" | sed -E 's/.*"voip":([0-9]+).*/\1/')"
+      if [ "${nad:-0}" -eq 0 ] 2>/dev/null; then
+        warn "→ 0 AKTIVE Geräte! Alle Geräte dieses Users sind widerrufen (oder Login legte kein Gerät an). Die App ist quasi nicht registriert."
       elif [ "${nr:-0}" -eq 0 ] 2>/dev/null; then
-        warn "→ NICHT MAL ein regulärer Push-Token! Entweder Notifications nicht erlaubt, alter Build, oder App erreicht /devices/push-token nicht."
+        warn "→ Geräte da, aber NICHT MAL ein regulärer Push-Token. Notifications nicht erlaubt / alter Build / App erreicht /devices/push-token nicht."
+      elif [ "${nv:-0}" -eq 0 ] 2>/dev/null; then
+        warn "→ Regulärer Push da, aber KEIN VoIP-Token → iOS liefert keinen (meist Push-Capability im Provisioning-Profil fehlt)."
+      else
+        ok "→ Regulärer Push UND VoIP-Token vorhanden."
       fi
     else
-      info "Gegencheck: ${reg:-<keine Antwort>}"
+      info "Gegencheck-Rohantwort: ${reg:-<leer>}"
     fi
   fi
 
