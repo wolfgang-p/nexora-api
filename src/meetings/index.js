@@ -432,6 +432,9 @@ async function leave(req, res, { params }) {
     // the recording gets processed even without an explicit "end" click.
     try { await ensureAnalysisPending(meeting.id); }
     catch (err) { console.warn('[meet.leave.analysis]', err); }
+    // Finalize a running full recording (safety net — see endMeeting).
+    try { await finalizeFullRecordingIfPending(meeting.id); }
+    catch (err) { console.warn('[meet.leave.fullrec]', err); }
     try {
       const { sendTo } = require('../ws/dispatch');
       const { data: rest } = await supabase.from('meeting_participants')
@@ -483,6 +486,12 @@ async function endMeeting(req, res, { params }) {
   let shareToken = null;
   try { shareToken = await ensureAnalysisPending(meeting.id); }
   catch (err) { console.warn('[meet.end.analysis]', err); }
+
+  // SAFETY NET: if a full recording was running, finalize whatever bytes made it
+  // to disk — so it's never stuck on "recording" when the meeting ends (covers
+  // both "host ended without stopping the recording" and a lost client finalize).
+  try { await finalizeFullRecordingIfPending(meeting.id); }
+  catch (err) { console.warn('[meet.end.fullrec]', err); }
 
   try {
     const { sendTo } = require('../ws/dispatch');
@@ -1253,6 +1262,54 @@ async function fullRecordingChunk(req, res, { params, query }) {
 }
 
 /**
+ * Register whatever full.webm exists on disk as the meeting's full recording and
+ * flip the analysis to 'ready'. Idempotent + safe to call from multiple paths
+ * (the client's finalize call AND the server-side end/leave hooks) — this is the
+ * SAFETY NET so a recording is never left stuck in 'recording' if the client
+ * couldn't finalize (tab closed, network drop, meeting ended for everyone).
+ *
+ * Returns { media_id } on success, null if there's nothing to finalize. Only
+ * acts when the current status is 'recording' or 'processing' (never clobbers an
+ * already-ready recording, and doesn't invent one where none was started).
+ */
+async function finalizeFullRecordingIfPending(meetingId) {
+  const { data: row } = await supabase.from('meeting_analysis')
+    .select('full_recording_status, full_recording_media_id').eq('meeting_id', meetingId).maybeSingle();
+  if (!row) return null;
+  if (row.full_recording_media_id) return { media_id: row.full_recording_media_id }; // already done
+  if (row.full_recording_status !== 'recording' && row.full_recording_status !== 'processing') return null;
+
+  const p = planRecording(meetingId, 'full', 'webm');
+  let size = 0;
+  try { size = (await fsp.stat(p.absPath)).size; } catch { size = 0; }
+  if (size <= 0) {
+    // Recording was started but no bytes landed — mark failed so the UI stops
+    // showing "wird verarbeitet…".
+    await supabase.from('meeting_analysis')
+      .update({ full_recording_status: 'failed', updated_at: new Date().toISOString() })
+      .eq('meeting_id', meetingId);
+    return null;
+  }
+
+  const { data: media, error } = await supabase.from('media_objects').insert({
+    conversation_id: null,
+    storage_key: p.storageKey,
+    mime_type: 'video/webm',
+    size_bytes: size,
+  }).select('id').single();
+  if (error) return null;
+
+  await supabase.from('meeting_analysis')
+    .update({
+      full_recording_media_id: media.id,
+      full_recording_status: 'ready',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('meeting_id', meetingId);
+  return { media_id: media.id };
+}
+
+/**
  * POST /meetings/:roomId/full-recording-finalize   (host only)
  * Registers the finished full.webm as a public media_objects row and points the
  * analysis at it (status → ready). If no file exists, marks failed.
@@ -1262,38 +1319,17 @@ async function fullRecordingFinalize(req, res, { params }) {
   if (!meeting) return;
 
   await ensureAnalysisPending(meeting.id).catch(() => {});
-
-  const p = planRecording(meeting.id, 'full', 'webm');
-  let size = 0;
-  try { size = (await fsp.stat(p.absPath)).size; }
-  catch {
-    await supabase.from('meeting_analysis')
-      .update({ full_recording_status: 'failed', updated_at: new Date().toISOString() })
-      .eq('meeting_id', meeting.id);
-    return badRequest(res, 'No recording file');
-  }
-
-  // Register as a publicly-servable media object (conversation_id NULL → served
-  // by /media/:id without auth, same as meeting PDFs/avatars).
-  const { data: media, error: insErr } = await supabase.from('media_objects').insert({
-    uploader_user_id: req.auth?.userId || null,
-    uploader_device_id: req.auth?.deviceId || null,
-    conversation_id: null,
-    storage_key: p.storageKey,
-    mime_type: 'video/webm',
-    size_bytes: size,
-  }).select('id').single();
-  if (insErr) return serverError(res, 'Could not register recording', insErr);
-
+  // Force status to 'processing' first so the shared helper acts even if the
+  // client never set 'recording' (e.g. finalize arrives before the first chunk's
+  // status write landed).
   await supabase.from('meeting_analysis')
-    .update({
-      full_recording_media_id: media.id,
-      full_recording_status: 'ready',
-      updated_at: new Date().toISOString(),
-    })
-    .eq('meeting_id', meeting.id);
+    .update({ full_recording_status: 'processing', updated_at: new Date().toISOString() })
+    .eq('meeting_id', meeting.id)
+    .is('full_recording_media_id', null);
 
-  ok(res, { ok: true, media_id: media.id });
+  const result = await finalizeFullRecordingIfPending(meeting.id);
+  if (!result) return badRequest(res, 'No recording file');
+  ok(res, { ok: true, media_id: result.media_id });
 }
 
 module.exports = {

@@ -146,10 +146,14 @@ async function chatAnthropic(messages, { json, maxTokens, temperature }) {
 }
 
 /**
- * Whisper audio transcription (OpenAI only). Returns plaintext.
+ * Whisper audio transcription (OpenAI only).
+ *   - default: returns the plaintext string.
+ *   - { segments: true }: returns { text, segments: [{ start, end, text }] }
+ *     where start/end are SECONDS into the audio — used to build a chronological
+ *     multi-speaker timeline.
  * Other providers aren't wired yet.
  */
-async function transcribe(audioBuffer, { mimeType = 'audio/m4a', filename = 'audio.m4a', language } = {}) {
+async function transcribe(audioBuffer, { mimeType = 'audio/m4a', filename = 'audio.m4a', language, segments = false } = {}) {
   if (!RESOLVED.provider) throw new AiDisabled();
   if (RESOLVED.provider !== 'openai') {
     throw new Error('[ai] transcription currently requires AI_PROVIDER=openai (Whisper).');
@@ -159,7 +163,8 @@ async function transcribe(audioBuffer, { mimeType = 'audio/m4a', filename = 'aud
   form.append('file', blob, filename);
   form.append('model', 'whisper-1');
   if (language) form.append('language', language);
-  form.append('response_format', 'text');
+  // verbose_json gives per-segment timestamps; plain text otherwise.
+  form.append('response_format', segments ? 'verbose_json' : 'text');
 
   const res = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
@@ -171,7 +176,13 @@ async function transcribe(audioBuffer, { mimeType = 'audio/m4a', filename = 'aud
     const t = await res.text().catch(() => '');
     throw new Error(`[ai:whisper] HTTP ${res.status}: ${t.slice(0, 200)}`);
   }
-  return (await res.text()).trim();
+  if (!segments) return (await res.text()).trim();
+
+  const data = await res.json();
+  const segs = Array.isArray(data.segments)
+    ? data.segments.map((s) => ({ start: Number(s.start) || 0, end: Number(s.end) || 0, text: (s.text || '').trim() })).filter((s) => s.text)
+    : [];
+  return { text: (data.text || '').trim(), segments: segs };
 }
 
 /** Strip common JSON fence / prose and try to parse. */

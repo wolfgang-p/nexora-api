@@ -50,22 +50,27 @@ function runFfmpeg(args) {
 }
 
 /**
- * Transcribe one recording file. If it's within Whisper's size limit we send it
- * directly; otherwise we split it into SEGMENT_SECONDS chunks with ffmpeg,
- * transcribe each, and stitch the text back together in order. Returns the full
- * transcript text (or '' on total failure). ffmpeg output goes to a temp dir
- * that's always cleaned up.
+ * Transcribe one recording file into TIMESTAMPED utterances. Returns an array of
+ * { startSec, text } — start seconds are relative to the START of this speaker's
+ * recording. If the file fits Whisper we ask for per-segment timestamps
+ * directly; if it's too big we split with ffmpeg and add each piece's time
+ * offset so the timestamps stay correct across the whole recording.
+ *
+ * Timestamped segments are what let us interleave everyone chronologically
+ * (utterance A, utterance B, utterance A again — like a chat) instead of dumping
+ * one speaker's whole block before the next.
  */
 async function transcribeRecording(absPath, mimeType) {
   const buf = await fsp.readFile(absPath);
-  if (buf.length === 0) return '';
+  if (buf.length === 0) return [];
 
   if (buf.length <= WHISPER_MAX_BYTES) {
-    return (await ai.transcribe(buf, { mimeType: mimeType || 'audio/webm', filename: 'speaker.webm' })).trim();
+    const r = await ai.transcribe(buf, { mimeType: mimeType || 'audio/webm', filename: 'speaker.webm', segments: true });
+    return (r.segments || []).map((s) => ({ startSec: s.start, text: s.text }));
   }
 
   // Too big → segment with ffmpeg. Copy the audio stream (no re-encode) into
-  // fixed-duration .webm pieces.
+  // fixed-duration .webm pieces; add each piece's base offset to its timestamps.
   const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'koro-seg-'));
   try {
     const pattern = path.join(tmpDir, 'seg-%04d.webm');
@@ -75,18 +80,20 @@ async function transcribeRecording(absPath, mimeType) {
       '-c', 'copy', '-reset_timestamps', '1', pattern,
     ]);
     const files = (await fsp.readdir(tmpDir)).filter((f) => f.endsWith('.webm')).sort();
-    const parts = [];
-    for (const f of files) {
+    const out = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      const base = i * SEGMENT_SECONDS; // this piece starts here in the full recording
       const segBuf = await fsp.readFile(path.join(tmpDir, f));
       if (segBuf.length === 0 || segBuf.length > WHISPER_MAX_BYTES) continue;
       try {
-        const t = (await ai.transcribe(segBuf, { mimeType: 'audio/webm', filename: f })).trim();
-        if (t) parts.push(t);
+        const r = await ai.transcribe(segBuf, { mimeType: 'audio/webm', filename: f, segments: true });
+        for (const s of r.segments || []) out.push({ startSec: base + s.start, text: s.text });
       } catch (err) {
         console.warn(`[meet-analysis] segment ${f} transcribe failed:`, err.message);
       }
     }
-    return parts.join(' ');
+    return out;
   } finally {
     await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -173,32 +180,40 @@ async function analyzeMeeting(meetingId) {
       continue;
     }
 
-    let text = '';
+    let segments = [];
     try {
-      // Handles both small files (direct) and long ones (ffmpeg-segmented).
-      text = await transcribeRecording(absPath, rec.mime_type);
+      // Timestamped utterances (small files direct, long files ffmpeg-segmented).
+      segments = await transcribeRecording(absPath, rec.mime_type);
     } catch (err) {
       console.warn(`[meet-analysis] transcribe failed for ${rec.storage_key}:`, err.message);
       continue;
     }
-    text = (text || '').trim();
-    if (!text) continue;
+    if (!segments.length) continue;
 
-    // Rough start offset: when this speaker's recording began, relative to the
-    // meeting start. Good enough to order speakers on a timeline.
+    // When this speaker's recording began, relative to the meeting start. Each
+    // utterance's absolute meeting offset = that base + the utterance's time in
+    // the recording. This is what interleaves speakers chronologically.
     const startedMs = rec.started_at ? new Date(rec.started_at).getTime() : null;
-    const offsetMs = (meetingStartMs != null && startedMs != null)
+    const baseMs = (meetingStartMs != null && startedMs != null)
       ? Math.max(0, startedMs - meetingStartMs) : 0;
 
-    transcriptRows.push({
-      meeting_id: meetingId,
-      recording_id: rec.id,
-      speaker_display_name: rec.participant_display_name || 'Teilnehmer',
-      speaker_device_id: rec.participant_device_id,
-      text,
-      started_offset_ms: offsetMs,
-    });
+    for (const seg of segments) {
+      const text = (seg.text || '').trim();
+      if (!text) continue;
+      transcriptRows.push({
+        meeting_id: meetingId,
+        recording_id: rec.id,
+        speaker_display_name: rec.participant_display_name || 'Teilnehmer',
+        speaker_device_id: rec.participant_device_id,
+        text,
+        started_offset_ms: baseMs + Math.round((seg.startSec || 0) * 1000),
+      });
+    }
   }
+
+  // Sort ALL utterances across ALL speakers chronologically so the transcript
+  // reads like a chat (A, B, A, C, …) rather than one speaker's whole block.
+  transcriptRows.sort((a, b) => a.started_offset_ms - b.started_offset_ms);
 
   if (transcriptRows.length) {
     const { error } = await supabase.from('meeting_transcripts').insert(transcriptRows);
