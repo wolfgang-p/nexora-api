@@ -180,7 +180,14 @@ async function pushIncomingCall(deviceIds, { callId, conversationId, kind, fromN
  * Env vars (operator):
  *   APNS_KEY_ID         — 10-char Apple key id
  *   APNS_TEAM_ID        — 10-char Apple team id
- *   APNS_KEY_P8         — raw .p8 contents (newlines preserved)
+ *   APNS_KEY_P8_BASE64  — the .p8 file, base64-encoded to a SINGLE line
+ *                         (PREFERRED — survives Docker Compose `env_file`,
+ *                          which cannot parse multi-line values), OR
+ *   APNS_KEY_P8         — raw .p8 contents. Accepts real newlines (works via
+ *                         dotenv) OR literal "\n" escapes on one line. Note
+ *                         that a multi-line APNS_KEY_P8 gets TRUNCATED by
+ *                         Docker Compose env_file — use APNS_KEY_P8_BASE64
+ *                         there.
  *   APNS_BUNDLE_ID      — e.g. "com.kyudev.koro"  (the .voip topic is
  *                         this + ".voip" automatically)
  *   APNS_PRODUCTION     — "1" for prod APNs, "0" for sandbox
@@ -188,9 +195,24 @@ async function pushIncomingCall(deviceIds, { callId, conversationId, kind, fromN
  * If any of these are missing we no-op silently. The regular Expo push
  * path still fires so users on backgrounded devices still ring.
  */
+function resolveApnsKey() {
+  // Preferred: base64 single-line (Compose-safe). Fall back to the raw form,
+  // converting literal "\n" escapes back into real newlines so a one-line
+  // APNS_KEY_P8 also works.
+  const b64 = process.env.APNS_KEY_P8_BASE64;
+  if (b64 && b64.trim()) {
+    try { return Buffer.from(b64.trim(), 'base64').toString('utf8'); }
+    catch { /* fall through to raw */ }
+  }
+  const raw = process.env.APNS_KEY_P8;
+  if (raw && raw.trim()) return raw.includes('\\n') ? raw.replace(/\\n/g, '\n') : raw;
+  return null;
+}
+
 async function pushVoipCall(deviceIds, payload) {
   if (!deviceIds?.length) return [];
-  if (!process.env.APNS_KEY_ID || !process.env.APNS_TEAM_ID || !process.env.APNS_KEY_P8 || !process.env.APNS_BUNDLE_ID) {
+  const apnsKey = resolveApnsKey();
+  if (!process.env.APNS_KEY_ID || !process.env.APNS_TEAM_ID || !apnsKey || !process.env.APNS_BUNDLE_ID) {
     return []; // not configured — silently skip (Expo push handles all devices)
   }
 
@@ -220,7 +242,7 @@ async function pushVoipCall(deviceIds, payload) {
 
   const provider = new apn.Provider({
     token: {
-      key: process.env.APNS_KEY_P8,
+      key: apnsKey,
       keyId: process.env.APNS_KEY_ID,
       teamId: process.env.APNS_TEAM_ID,
     },
