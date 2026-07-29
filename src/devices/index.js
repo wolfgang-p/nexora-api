@@ -145,31 +145,38 @@ async function updateDevice(req, res, { params }) {
 async function registerPushToken(req, res) {
   const { readJson, badRequest } = require('../util/response');
   const body = await readJson(req).catch(() => null);
-  // TEMP DIAGNOSTIC: surface exactly what the server received, so a client that
-  // reports "uploaded ✓" but leaves voip_token null in the DB is explained.
-  console.log(`[push-token] device=${req.auth?.deviceId} hasToken=${!!body?.token} hasVoip=${!!body?.voip_token} platform=${body?.platform || req.headers['x-platform']}`);
   if (!body?.token && !body?.voip_token) {
-    console.warn('[push-token] REJECTED: empty body (no token, no voip_token) — body was:', JSON.stringify(body));
     return badRequest(res, 'token or voip_token required');
   }
 
-  // Patch only the columns the client actually provided so a subsequent
-  // VoIP-only registration (issued lazily after PushKit init) doesn't
-  // wipe the regular APNs/FCM token.
-  const patch = {
-    device_id: req.auth.deviceId,
-    platform: body.platform || req.headers['x-platform'] || 'unknown',
-    last_used_at: new Date().toISOString(),
-  };
-  if (body.token)      patch.token = body.token;
-  if (body.voip_token) patch.voip_token = body.voip_token;
+  const deviceId = req.auth.deviceId;
+  const platform = body.platform || req.headers['x-platform'] || 'unknown';
 
-  const { error } = await supabase.from('push_tokens').upsert(patch, { onConflict: 'device_id' });
+  // Update only the columns the client actually provided so a VoIP-only
+  // registration (PushKit fires before the user grants notifications, so the
+  // regular token may not exist yet) doesn't wipe the regular APNs/FCM token —
+  // and vice-versa. We UPDATE an existing row or INSERT a new one explicitly,
+  // rather than upsert(): a bare upsert with only { voip_token } tried to INSERT
+  // a row with token=NULL and hit the NOT-NULL constraint (0034 relaxes that,
+  // but this split also guarantees we never clobber the sibling token column).
+  const fields = { platform, last_used_at: new Date().toISOString() };
+  if (body.token)      fields.token = body.token;
+  if (body.voip_token) fields.voip_token = body.voip_token;
+
+  const { data: existing } = await supabase
+    .from('push_tokens')
+    .select('device_id')
+    .eq('device_id', deviceId)
+    .maybeSingle();
+
+  const { error } = existing
+    ? await supabase.from('push_tokens').update(fields).eq('device_id', deviceId)
+    : await supabase.from('push_tokens').insert({ device_id: deviceId, ...fields });
+
   if (error) {
-    console.error('[push-token] UPSERT FAILED:', error.message, '— patch was:', JSON.stringify({ ...patch, token: patch.token ? '…' : undefined, voip_token: patch.voip_token ? '…' : undefined }));
+    console.error('[push-token] SAVE FAILED:', error.message);
     return serverError(res, 'Failed to save push token');
   }
-  console.log(`[push-token] SAVED device=${req.auth.deviceId} voip=${!!patch.voip_token} reg=${!!patch.token}`);
   ok(res, { ok: true });
 }
 
