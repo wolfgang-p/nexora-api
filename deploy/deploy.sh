@@ -73,6 +73,14 @@ $COMPOSE up -d --no-deps redis
 roll api-blue  koro-api-blue
 roll api-green koro-api-green
 
+# ── 3b. Recreate the meeting-analysis worker on the new image ──────────
+# It shares koro-api:latest (built above) but isn't a load-balanced API
+# instance, so it isn't "rolled" — just recreate it. It's a single background
+# worker (no health check, no Traefik); a brief restart is fine, in-flight
+# analysis is re-claimed from the DB on the next tick.
+log "recreating meeting-worker ..."
+$COMPOSE up -d --no-deps meeting-worker
+
 # ── 4. Record the deploy in the dashboard's event log ──────────────────
 SUBJ="$(git log -1 --pretty=%s | tr -d '"\\' | cut -c1-120)"
 AUTHOR="$(git log -1 --pretty=%an | tr -d '"\\')"
