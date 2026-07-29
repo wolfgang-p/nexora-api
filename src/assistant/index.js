@@ -222,7 +222,11 @@ const SYSTEM_PROMPT =
   '- "objection": Reaktion auf einen erkannten Einwand ("Akku schlecht" → Gegenargument).\n' +
   '- "suggestion": eine gute nächste Frage oder ein Argument Richtung Ziel.\n' +
   '- "nudge": ein taktischer Hinweis (z. B. "Jetzt zum Abschluss kommen").\n' +
-  'Maximal 2 items. Keine Wiederholung von bereits Offensichtlichem.';
+  'WICHTIG: Gib nur den EINEN besten, relevantesten Vorschlag zurück (maximal 2, ' +
+  'und nur wenn wirklich zwei verschiedene Dinge JETZT wichtig sind). Lieber ein ' +
+  'exzellenter Vorschlag als mehrere mittelmäßige. Keine Wiederholung von bereits ' +
+  'Gesagtem oder Offensichtlichem — wenn es gerade nichts Wertvolles zu sagen gibt, ' +
+  'gib "items":[] zurück.';
 
 /** Filter out Whisper's silence/hallucination artefacts on tiny chunks. */
 function isNoise(text) {
