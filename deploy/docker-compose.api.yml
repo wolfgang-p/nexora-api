@@ -112,6 +112,10 @@ services:
       - edge
     depends_on:
       - redis
+    # The worker has no HTTP server, so the image's HTTP healthcheck would always
+    # report "unhealthy". Disable it — the process staying up IS its health.
+    healthcheck:
+      disable: true
 
   redis:
     image: redis:7-alpine

@@ -15,7 +15,7 @@
 
 // Loads dotenv (via config) and lets supabase/ai init off the same env.
 require('../config');
-const { processOnePending, sweepOldRecordings } = require('./meetingAnalysis');
+const { processOnePending, sweepOldRecordings, finalizeStuckRecordings } = require('./meetingAnalysis');
 
 const IDLE_MS = 15_000; // poll interval when there's nothing to do
 const BUSY_MS = 500;    // brief gap between back-to-back jobs
@@ -36,6 +36,11 @@ async function loop() {
     } catch (err) {
       console.error('[worker] tick error:', err?.message || err);
     }
+
+    // Finalize any full recordings stuck in 'recording'/'processing' for ended
+    // meetings (safety net for lost client-side finalizes).
+    try { await finalizeStuckRecordings(); }
+    catch (err) { console.error('[worker] fullrec finalize error:', err?.message || err); }
 
     // Periodic retention sweep of old recording audio (best-effort).
     if (Date.now() - lastSweep > SWEEP_MS) {

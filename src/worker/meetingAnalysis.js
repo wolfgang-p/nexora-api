@@ -24,7 +24,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { supabase } = require('../db/supabase');
-const { resolveKey } = require('../media/fs');
+const { resolveKey, planRecording } = require('../media/fs');
 const ai = require('../ai/provider');
 
 // Whisper hard limit is 25 MB per file. WebM/Opus is ~1 MB/min, so a normal
@@ -299,4 +299,51 @@ async function sweepOldRecordings() {
   return (old || []).length;
 }
 
-module.exports = { processOnePending, sweepOldRecordings };
+/**
+ * Finalize meeting FULL recordings that are stuck in 'recording'/'processing'
+ * (e.g. the host's tab closed, the client finalize was lost, or the meeting
+ * ended before the server-side safety net existed). For each such meeting whose
+ * meeting has already ended, register whatever full.webm is on disk as a public
+ * media object and flip the status to 'ready' (or 'failed' if there are no
+ * bytes). Idempotent — skips rows that already have a media id.
+ */
+async function finalizeStuckRecordings() {
+  const { data: stuck } = await supabase.from('meeting_analysis')
+    .select('meeting_id, full_recording_status, full_recording_media_id')
+    .in('full_recording_status', ['recording', 'processing'])
+    .is('full_recording_media_id', null)
+    .limit(20);
+  if (!stuck?.length) return 0;
+
+  let fixed = 0;
+  for (const row of stuck) {
+    // Only finalize once the meeting is actually over — an in-progress recording
+    // should keep its 'recording' status.
+    const { data: meeting } = await supabase.from('meetings')
+      .select('ended_at').eq('id', row.meeting_id).maybeSingle();
+    if (!meeting || !meeting.ended_at) continue;
+
+    const p = planRecording(row.meeting_id, 'full', 'webm');
+    let size = 0;
+    try { size = (await fsp.stat(resolveKey(p.storageKey))).size; } catch { size = 0; }
+
+    if (size <= 0) {
+      await supabase.from('meeting_analysis')
+        .update({ full_recording_status: 'failed', updated_at: new Date().toISOString() })
+        .eq('meeting_id', row.meeting_id);
+      continue;
+    }
+    const { data: media, error } = await supabase.from('media_objects').insert({
+      conversation_id: null, storage_key: p.storageKey, mime_type: 'video/webm', size_bytes: size,
+    }).select('id').single();
+    if (error) continue;
+    await supabase.from('meeting_analysis')
+      .update({ full_recording_media_id: media.id, full_recording_status: 'ready', updated_at: new Date().toISOString() })
+      .eq('meeting_id', row.meeting_id);
+    fixed++;
+  }
+  if (fixed) console.log(`[meet-analysis] finalized ${fixed} stuck full recording(s)`);
+  return fixed;
+}
+
+module.exports = { processOnePending, sweepOldRecordings, finalizeStuckRecordings };
