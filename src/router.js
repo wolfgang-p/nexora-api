@@ -384,6 +384,9 @@ r('POST',   '/auth/recovery/verify',            recovery.verifyAndLogin,     { a
 // --- koro-meet (multi-participant meetings) ---
 r('POST',   '/meetings',                        meetings.create,        { auth: false, optionalAuth: true });
 r('GET',    '/meetings',                        meetings.listMine,      { dualAuth: true });
+// PUBLIC unlisted analysis view — registered BEFORE /meetings/:roomId so the
+// literal "shared" segment isn't captured as a roomId.
+r('GET',    '/meetings/shared/:shareToken',     meetings.getSharedAnalysis, { auth: false });
 r('GET',    '/meetings/:roomId',                meetings.getOne,        { auth: false });
 r('GET',    '/meetings/:roomId/ice-servers',    meetings.iceServers,    { auth: false });
 r('POST',   '/meetings/:roomId/join',           meetings.join,          { auth: false, optionalAuth: true });
@@ -398,6 +401,10 @@ r('POST',   '/meetings/:roomId/participants/:participantId/kick', meetings.kickP
 r('PATCH',  '/meetings/:roomId/pdf',            meetings.setPdf,        { auth: false, optionalAuth: true });
 r('DELETE', '/meetings/:roomId/pdf',            meetings.clearPdf,      { auth: false, optionalAuth: true });
 r('POST',   '/meetings/:roomId/pdf-upload',     meetings.uploadPdf,     { auth: false, optionalAuth: true });
+// Post-meeting recording / analysis. recording-chunk streams per-speaker audio;
+// analysis is for participants.
+r('POST',   '/meetings/:roomId/recording-chunk', meetings.recordingChunk, { auth: false, optionalAuth: true });
+r('GET',    '/meetings/:roomId/analysis',       meetings.getAnalysis,   { auth: false, optionalAuth: true });
 
 // --- koro.bio (LinkTree) ---
 r('GET',    '/bio/me',                       bio.getMine);
@@ -549,8 +556,9 @@ function corsHeaders(req) {
     // endpoints that accept anonymous callers; reflect it in preflight.
     // `x-file-name` + `x-conversation-id` are raw-body upload metadata
     // used by /media/upload and /meetings/:roomId/pdf-upload.
+    // `x-meet-name` is the speaker display name on recording-chunk uploads.
     'Access-Control-Allow-Headers':
-      'Authorization, Content-Type, X-Koro-Signature, X-Koro-Meet-Device, X-File-Name, X-Conversation-Id',
+      'Authorization, Content-Type, X-Koro-Signature, X-Koro-Meet-Device, X-File-Name, X-Conversation-Id, X-Meet-Name',
     'Access-Control-Max-Age': '86400',
     'Vary': 'Origin',
   };

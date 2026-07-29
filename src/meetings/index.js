@@ -32,8 +32,23 @@ const { pipeline } = require('node:stream/promises');
 const { supabase } = require('../db/supabase');
 const { readJson, ok, created, badRequest, forbidden, notFound, serverError } = require('../util/response');
 const { audit } = require('../util/audit');
-const { plan, ensureDir } = require('../media/fs');
+const { plan, ensureDir, planRecording, appendChunk } = require('../media/fs');
 const { buildIceServers } = require('../calls/ice');
+
+// Per-speaker recording caps. A chunk is one MediaRecorder timeslice (~4s of
+// Opus ≈ tens of KB), so 8 MB is a huge safety margin; the whole recording is
+// capped so one runaway tab can't fill the disk.
+const REC_CHUNK_MAX_BYTES = 8 * 1024 * 1024;
+const REC_TOTAL_MAX_BYTES = 300 * 1024 * 1024;
+
+// Unlisted share slug for the analysis page. base58-ish, ~22 chars.
+const SHARE_ALPHA = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+function newShareToken() {
+  const bytes = crypto.randomBytes(22);
+  let out = '';
+  for (let i = 0; i < 22; i++) out += SHARE_ALPHA[bytes[i] % SHARE_ALPHA.length];
+  return out;
+}
 
 // Max PDF size that a meeting host can pin. 25 MB is enough for a
 // typical slide deck but small enough to keep the streaming write
@@ -407,6 +422,10 @@ async function leave(req, res, { params }) {
   // drop out. (Also covers the "host closes the room" expectation.)
   if (leaverIsHost && !meeting.ended_at) {
     await supabase.from('meetings').update({ ended_at: new Date().toISOString() }).eq('id', meeting.id);
+    // Host closed the room (tab close / navigate away) → queue analysis too, so
+    // the recording gets processed even without an explicit "end" click.
+    try { await ensureAnalysisPending(meeting.id); }
+    catch (err) { console.warn('[meet.leave.analysis]', err); }
     try {
       const { sendTo } = require('../ws/dispatch');
       const { data: rest } = await supabase.from('meeting_participants')
@@ -430,6 +449,13 @@ async function leave(req, res, { params }) {
   if ((count || 0) === 0) {
     await supabase.from('meetings').update({ ended_at: new Date().toISOString() })
       .eq('id', meeting.id);
+    // Meeting emptied out (e.g. the host's row was already marked left, so the
+    // host-left branch above didn't fire) → still queue the analysis so a
+    // recording isn't left unprocessed.
+    if (!meeting.ended_at) {
+      try { await ensureAnalysisPending(meeting.id); }
+      catch (err) { console.warn('[meet.leave.emptyAnalysis]', err); }
+    }
   }
 
   ok(res, { ok: true });
@@ -444,6 +470,14 @@ async function endMeeting(req, res, { params }) {
   if (!meeting) return;
   const now = new Date().toISOString();
   await supabase.from('meetings').update({ ended_at: meeting.ended_at || now, updated_at: now }).eq('id', meeting.id);
+
+  // Queue post-meeting analysis (transcription + AI summary). The dedicated
+  // worker picks up the pending row; here we just create it and return the
+  // share token so the client can jump straight to the analysis page.
+  let shareToken = null;
+  try { shareToken = await ensureAnalysisPending(meeting.id); }
+  catch (err) { console.warn('[meet.end.analysis]', err); }
+
   try {
     const { sendTo } = require('../ws/dispatch');
     const { data: peers } = await supabase.from('meeting_participants')
@@ -452,7 +486,7 @@ async function endMeeting(req, res, { params }) {
       sendTo(p.device_id, { type: 'meet.broadcast', meeting_id: params.roomId, subtype: 'ended', payload: { reason: 'host_ended' } });
     }
   } catch (err) { console.warn('[meet.end]', err); }
-  ok(res, { ok: true });
+  ok(res, { ok: true, share_token: shareToken });
 }
 
 async function update(req, res, { params }) {
@@ -880,8 +914,227 @@ async function uploadPdf(req, res, { params }) {
   ok(res, { meeting: updated, pdf });
 }
 
+// ── Recording / transcription / analysis ─────────────────────────────────
+
+/** Read the full raw request body into a Buffer, capped at `max` bytes. */
+function readRawBody(req, max) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > max) {
+        reject(Object.assign(new Error('Chunk too large'), { statusCode: 413 }));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+/**
+ * POST /meetings/:roomId/recording-chunk   (auth or guest)
+ *
+ * Streams one MediaRecorder timeslice (raw audio bytes) from a participant to
+ * the server, appended to that speaker's single recording file. Query params:
+ *   ?first=1  → first chunk of the recording (creates the file + row)
+ *   ?final=1  → last chunk (stamps ended_at so the worker knows it's complete)
+ * Identity: `x-koro-meet-device` header (guest) or Bearer (Koro user), plus an
+ * `x-meet-name` header for the display name. Body: raw audio/webm bytes.
+ */
+async function recordingChunk(req, res, { params, query }) {
+  const { data: meeting } = await supabase.from('meetings')
+    .select('id, ended_at').eq('room_id', params.roomId).maybeSingle();
+  if (!meeting) return notFound(res);
+
+  // Resolve the speaker's signaling id the same way join() does.
+  const actor = actorFor(req, null);
+  if (!actor.deviceId) return badRequest(res, 'device_id required');
+  // Display name arrives URL-encoded (HTTP headers are latin1; names may be
+  // UTF-8). Decode defensively.
+  let displayName = 'Teilnehmer';
+  const rawName = req.headers['x-meet-name'];
+  if (rawName) {
+    try { displayName = decodeURIComponent(String(rawName)); }
+    catch { displayName = String(rawName); }
+  } else if (actor.displayName) {
+    displayName = actor.displayName;
+  }
+  displayName = displayName.slice(0, 64);
+
+  const isFirst = query?.first === '1' || req.headers['x-rec-first'] === '1';
+  const isFinal = query?.final === '1' || req.headers['x-rec-final'] === '1';
+
+  const p = planRecording(meeting.id, actor.deviceId, 'webm');
+
+  // Read the chunk (may be empty on a bare final marker).
+  let buf;
+  try {
+    buf = await readRawBody(req, REC_CHUNK_MAX_BYTES);
+  } catch (err) {
+    return serverError(res, 'Chunk read failed', err);
+  }
+
+  // Enforce the per-recording size cap BEFORE writing. Check the last known
+  // size from the row so a runaway/malicious client can't fill the disk. Once
+  // capped we silently drop further audio (200 min of Opus is already ~300 MB).
+  const { data: existingRec } = await supabase.from('meeting_recordings')
+    .select('bytes').eq('meeting_id', meeting.id)
+    .eq('participant_device_id', actor.deviceId).maybeSingle();
+  const priorBytes = Number(existingRec?.bytes || 0);
+
+  let total = priorBytes;
+  if (buf.length > 0 && priorBytes < REC_TOTAL_MAX_BYTES) {
+    try {
+      total = await appendChunk(p.absPath, buf);
+    } catch (err) {
+      return serverError(res, 'Chunk write failed', err);
+    }
+  } else if (buf.length > 0) {
+    console.warn(`[meet.rec] cap reached for ${p.storageKey} (${priorBytes} bytes) — dropping chunk`);
+  }
+
+  // Upsert the per-speaker recording row. On the first chunk we create it; on
+  // every chunk we bump bytes; on final we stamp ended_at.
+  const now = new Date().toISOString();
+  const patch = {
+    meeting_id: meeting.id,
+    participant_device_id: actor.deviceId,
+    participant_display_name: displayName,
+    participant_user_id: actor.userId || null,
+    storage_key: p.storageKey,
+    mime_type: 'audio/webm',
+    bytes: total || undefined,
+  };
+  if (isFinal) patch.ended_at = now;
+  if (isFirst) patch.started_at = now;
+
+  // Clean undefined so we don't overwrite bytes with null when total is 0.
+  Object.keys(patch).forEach((k) => patch[k] === undefined && delete patch[k]);
+
+  const { error } = await supabase.from('meeting_recordings')
+    .upsert(patch, { onConflict: 'meeting_id,participant_device_id' });
+  if (error) return serverError(res, 'Recording row failed', error);
+
+  ok(res, { ok: true, bytes: total });
+}
+
+/** Ensure a pending analysis row (+ share token) exists for a meeting. */
+async function ensureAnalysisPending(meetingId) {
+  const { data: existing } = await supabase.from('meeting_analysis')
+    .select('meeting_id, status, share_token').eq('meeting_id', meetingId).maybeSingle();
+  if (existing) {
+    // Re-queue only if a prior run failed; leave done/processing alone.
+    if (existing.status === 'failed') {
+      await supabase.from('meeting_analysis')
+        .update({ status: 'pending', error: null, updated_at: new Date().toISOString() })
+        .eq('meeting_id', meetingId);
+    }
+    return existing.share_token;
+  }
+  const share_token = newShareToken();
+  await supabase.from('meeting_analysis').insert({
+    meeting_id: meetingId, status: 'pending', share_token,
+  });
+  return share_token;
+}
+
+/** Shape a full analysis payload (durations + summary + transcript timeline). */
+async function buildAnalysisPayload(meeting, analysis) {
+  const [{ data: participants }, { data: segments }] = await Promise.all([
+    supabase.from('meeting_participants')
+      .select('display_name, device_id, user_id, is_host, joined_at, left_at')
+      .eq('meeting_id', meeting.id).order('joined_at', { ascending: true }),
+    supabase.from('meeting_transcripts')
+      .select('speaker_display_name, speaker_device_id, text, started_offset_ms, ended_offset_ms')
+      .eq('meeting_id', meeting.id).order('started_offset_ms', { ascending: true }),
+  ]);
+
+  // Collapse reconnect rows into one duration per speaker.
+  const byPerson = new Map();
+  for (const p of participants || []) {
+    const key = p.user_id || p.device_id;
+    const joined = p.joined_at ? new Date(p.joined_at).getTime() : null;
+    const left = p.left_at ? new Date(p.left_at).getTime()
+      : (meeting.ended_at ? new Date(meeting.ended_at).getTime() : Date.now());
+    const dur = joined != null ? Math.max(0, left - joined) : 0;
+    const prev = byPerson.get(key);
+    if (prev) {
+      prev.total_ms += dur;
+      if (p.is_host) prev.is_host = true;
+    } else {
+      byPerson.set(key, {
+        display_name: p.display_name, is_host: !!p.is_host,
+        joined_at: p.joined_at, total_ms: dur,
+      });
+    }
+  }
+
+  return {
+    status: analysis.status,
+    meeting: {
+      title: meeting.title,
+      started_at: meeting.started_at,
+      ended_at: meeting.ended_at,
+      duration_ms: meeting.started_at && meeting.ended_at
+        ? new Date(meeting.ended_at).getTime() - new Date(meeting.started_at).getTime()
+        : null,
+    },
+    participants: [...byPerson.values()].sort((a, b) => b.total_ms - a.total_ms),
+    summary_md: analysis.summary_md || null,
+    transcript: (segments || []).map((s) => ({
+      speaker: s.speaker_display_name,
+      text: s.text,
+      offset_ms: Number(s.started_offset_ms) || 0,
+    })),
+    share_token: analysis.share_token,
+  };
+}
+
+/**
+ * GET /meetings/:roomId/analysis   (auth or guest participant)
+ * Returns the analysis status and, once done, the full payload.
+ */
+async function getAnalysis(req, res, { params }) {
+  const { data: meeting } = await supabase.from('meetings')
+    .select('id, title, started_at, ended_at').eq('room_id', params.roomId).maybeSingle();
+  if (!meeting) return notFound(res);
+
+  const { data: analysis } = await supabase.from('meeting_analysis')
+    .select('*').eq('meeting_id', meeting.id).maybeSingle();
+  if (!analysis) return ok(res, { status: 'none' });
+
+  ok(res, await buildAnalysisPayload(meeting, analysis));
+}
+
+/**
+ * GET /meetings/shared/:shareToken   (PUBLIC — no auth)
+ * Read-only analysis for anyone with the unlisted link. Only served once the
+ * analysis is done (a still-processing meeting returns just its status).
+ */
+async function getSharedAnalysis(req, res, { params }) {
+  const token = String(params.shareToken || '').slice(0, 40);
+  if (!token) return notFound(res);
+  const { data: analysis } = await supabase.from('meeting_analysis')
+    .select('*').eq('share_token', token).maybeSingle();
+  if (!analysis) return notFound(res);
+
+  const { data: meeting } = await supabase.from('meetings')
+    .select('id, title, started_at, ended_at').eq('id', analysis.meeting_id).maybeSingle();
+  if (!meeting) return notFound(res);
+
+  if (analysis.status !== 'done') {
+    return ok(res, { status: analysis.status });
+  }
+  ok(res, await buildAnalysisPayload(meeting, analysis));
+}
+
 module.exports = {
   create, listMine, getOne, iceServers, join, leave, update, destroy,
   listMessages, postMessage,
   startNow, kickParticipant, setPdf, clearPdf, uploadPdf, endMeeting,
+  recordingChunk, getAnalysis, getSharedAnalysis, ensureAnalysisPending,
 };

@@ -85,6 +85,34 @@ services:
       <<: *api-env
       INSTANCE_ID: green
 
+  # Dedicated background worker for post-meeting analysis (transcription + AI
+  # summary). SINGLE instance on purpose — the API runs blue+green, so jobs that
+  # must not double-fire live here. Same image + .env + uploads volume as the API
+  # (it reads the recording files off `koro-uploads`), but NO Traefik labels and
+  # NO exposed port: it only polls the DB and calls OpenAI.
+  meeting-worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        GIT_COMMITTED_AT: ${GIT_COMMITTED_AT:-}
+    image: koro-api:latest
+    container_name: koro-meeting-worker
+    restart: unless-stopped
+    command: ["node", "src/worker/index.js"]
+    env_file:
+      - ../.env
+    environment:
+      NODE_ENV: production
+      INSTANCE_ID: worker
+    volumes:
+      - koro-uploads:/app/uploads
+    networks:
+      - edge
+    depends_on:
+      - redis
+
   redis:
     image: redis:7-alpine
     container_name: koro-redis
