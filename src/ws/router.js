@@ -51,15 +51,36 @@ async function route(ws, data) {
     // so if it was missed (cold-start push, race, dropped event) the callee
     // can't accept. This routes the request to the caller's device, which
     // re-emits its offer. Same forwarding shape as the other webrtc signals.
-    case 'webrtc.offer-request':
-      if (!data.target_device_id) return send(ws, { type: 'error', error: 'target_device_id required' });
-      return sendTo(data.target_device_id, {
+    case 'webrtc.offer-request': {
+      const relayPayload = {
         type: data.type,
         call_id: data.call_id,
         from_device_id: deviceId,
         from_user_id: userId,
         payload: data.payload,
-      });
+      };
+      // Fast path: callee knows the caller's device — relay directly.
+      if (data.target_device_id) return sendTo(data.target_device_id, relayPayload);
+
+      // Fallback: no target (the callee's hydrate guessed the wrong caller
+      // device, which happens when the caller has several devices). Look up ALL
+      // of the caller's currently-connected devices for THIS call and fan the
+      // request out — whichever device actually holds the live offer re-emits
+      // it. Without this, a wrong-device guess meant the offer-request went into
+      // the void and the callee could never accept (black screen / timeout).
+      if (!data.call_id) return send(ws, { type: 'error', error: 'call_id or target_device_id required' });
+      {
+        const { data: call } = await supabase.from('calls')
+          .select('initiator_user_id').eq('id', data.call_id).maybeSingle();
+        if (!call?.initiator_user_id) return;
+        const { data: devs } = await supabase.from('devices')
+          .select('id').eq('user_id', call.initiator_user_id).is('revoked_at', null);
+        for (const d of devs || []) {
+          if (d.id !== deviceId) sendTo(d.id, relayPayload);
+        }
+      }
+      return;
+    }
 
     // In-call emoji burst — fan out to all OTHER participants of the
     // call. We use the call's conversation as the broadcast group;
