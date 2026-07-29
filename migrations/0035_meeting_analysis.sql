@@ -74,9 +74,16 @@ CREATE TABLE IF NOT EXISTS meeting_analysis (
   -- Unlisted share slug — anyone with the link can view the analysis.
   share_token   TEXT UNIQUE NOT NULL,
   error         TEXT,
+  -- How many times the worker has tried. Lets it auto-retry transient failures
+  -- (e.g. an OpenAI blip) a few times before giving up as 'failed'.
+  attempts      INTEGER NOT NULL DEFAULT 0,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS meeting_analysis_status_idx
   ON meeting_analysis (status) WHERE status IN ('pending','processing');
+
+-- Safe to re-run: adds the retry counter if an earlier version of this
+-- migration created the table without it.
+ALTER TABLE meeting_analysis ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0;

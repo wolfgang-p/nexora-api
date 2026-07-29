@@ -20,14 +20,77 @@
  */
 
 const fsp = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
 const { supabase } = require('../db/supabase');
 const { resolveKey } = require('../media/fs');
 const ai = require('../ai/provider');
 
 // Whisper hard limit is 25 MB per file. WebM/Opus is ~1 MB/min, so a normal
-// meeting fits comfortably; we skip (and note) anything larger rather than
-// pulling in ffmpeg for the first version.
+// meeting fits comfortably. For longer recordings we split into time-based
+// segments with ffmpeg (see transcribeRecording) and transcribe each.
 const WHISPER_MAX_BYTES = 24 * 1024 * 1024;
+// Segment length when a recording is too big for one Whisper call. 10 min of
+// Opus is well under 25 MB with generous headroom.
+const SEGMENT_SECONDS = 600;
+
+/** Run ffmpeg with args; resolve on exit 0, reject otherwise. */
+function runFfmpeg(args) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    proc.stderr.on('data', (d) => { stderr += d.toString(); });
+    proc.on('error', reject);
+    proc.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(-400)}`));
+    });
+  });
+}
+
+/**
+ * Transcribe one recording file. If it's within Whisper's size limit we send it
+ * directly; otherwise we split it into SEGMENT_SECONDS chunks with ffmpeg,
+ * transcribe each, and stitch the text back together in order. Returns the full
+ * transcript text (or '' on total failure). ffmpeg output goes to a temp dir
+ * that's always cleaned up.
+ */
+async function transcribeRecording(absPath, mimeType) {
+  const buf = await fsp.readFile(absPath);
+  if (buf.length === 0) return '';
+
+  if (buf.length <= WHISPER_MAX_BYTES) {
+    return (await ai.transcribe(buf, { mimeType: mimeType || 'audio/webm', filename: 'speaker.webm' })).trim();
+  }
+
+  // Too big → segment with ffmpeg. Copy the audio stream (no re-encode) into
+  // fixed-duration .webm pieces.
+  const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'koro-seg-'));
+  try {
+    const pattern = path.join(tmpDir, 'seg-%04d.webm');
+    await runFfmpeg([
+      '-hide_banner', '-loglevel', 'error', '-i', absPath,
+      '-f', 'segment', '-segment_time', String(SEGMENT_SECONDS),
+      '-c', 'copy', '-reset_timestamps', '1', pattern,
+    ]);
+    const files = (await fsp.readdir(tmpDir)).filter((f) => f.endsWith('.webm')).sort();
+    const parts = [];
+    for (const f of files) {
+      const segBuf = await fsp.readFile(path.join(tmpDir, f));
+      if (segBuf.length === 0 || segBuf.length > WHISPER_MAX_BYTES) continue;
+      try {
+        const t = (await ai.transcribe(segBuf, { mimeType: 'audio/webm', filename: f })).trim();
+        if (t) parts.push(t);
+      } catch (err) {
+        console.warn(`[meet-analysis] segment ${f} transcribe failed:`, err.message);
+      }
+    }
+    return parts.join(' ');
+  } finally {
+    await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
 
 const SYS_MEETING_SUMMARY =
   'Du bist ein Assistent, der Meeting-Transkripte zusammenfasst. Fasse das ' +
@@ -40,35 +103,46 @@ const SYS_MEETING_SUMMARY =
  * Process exactly one pending meeting analysis (the oldest). Returns true if it
  * handled one, false if there was nothing to do — lets the loop back off.
  */
+// How many times we retry a meeting before marking it failed.
+const MAX_ATTEMPTS = 3;
+
 async function processOnePending() {
   // Atomically claim the oldest pending row: set processing only if still
   // pending, so two ticks (or a restart) never grab the same meeting.
   const { data: candidate } = await supabase.from('meeting_analysis')
-    .select('meeting_id, share_token')
+    .select('meeting_id, share_token, attempts')
     .eq('status', 'pending')
     .order('created_at', { ascending: true })
     .limit(1).maybeSingle();
   if (!candidate) return false;
 
   const { data: claimed } = await supabase.from('meeting_analysis')
-    .update({ status: 'processing', updated_at: new Date().toISOString() })
+    .update({ status: 'processing', attempts: (candidate.attempts || 0) + 1, updated_at: new Date().toISOString() })
     .eq('meeting_id', candidate.meeting_id)
     .eq('status', 'pending')
-    .select('meeting_id').maybeSingle();
+    .select('meeting_id, attempts').maybeSingle();
   if (!claimed) return true; // someone else claimed it; try again next tick
 
   const meetingId = candidate.meeting_id;
+  const attempt = claimed.attempts || 1;
   try {
     await analyzeMeeting(meetingId);
     await supabase.from('meeting_analysis')
       .update({ status: 'done', error: null, updated_at: new Date().toISOString() })
       .eq('meeting_id', meetingId);
-    console.log(`[meet-analysis] done ${meetingId}`);
+    console.log(`[meet-analysis] done ${meetingId} (attempt ${attempt})`);
+    // The raw audio has served its purpose (transcript is stored) — delete it so
+    // we don't retain recordings longer than necessary (storage + privacy).
+    await deleteRecordingAudio(meetingId).catch((e) =>
+      console.warn(`[meet-analysis] audio cleanup failed for ${meetingId}:`, e.message));
   } catch (err) {
     const msg = String(err?.message || err).slice(0, 500);
-    console.error(`[meet-analysis] FAILED ${meetingId}:`, msg);
+    // Auto-retry transient failures (OpenAI blip, etc.) up to MAX_ATTEMPTS by
+    // dropping back to 'pending'; only give up as 'failed' after that.
+    const giveUp = attempt >= MAX_ATTEMPTS;
+    console.error(`[meet-analysis] ${giveUp ? 'FAILED' : 'retry'} ${meetingId} (attempt ${attempt}/${MAX_ATTEMPTS}):`, msg);
     await supabase.from('meeting_analysis')
-      .update({ status: 'failed', error: msg, updated_at: new Date().toISOString() })
+      .update({ status: giveUp ? 'failed' : 'pending', error: msg, updated_at: new Date().toISOString() })
       .eq('meeting_id', meetingId);
   }
   return true;
@@ -90,23 +164,19 @@ async function analyzeMeeting(meetingId) {
 
   const transcriptRows = [];
   for (const rec of recs) {
-    let buf;
+    let absPath;
     try {
-      buf = await fsp.readFile(resolveKey(rec.storage_key));
+      absPath = resolveKey(rec.storage_key);
+      await fsp.access(absPath);
     } catch (err) {
       console.warn(`[meet-analysis] missing file ${rec.storage_key}:`, err.message);
-      continue;
-    }
-    if (buf.length === 0) continue;
-    if (buf.length > WHISPER_MAX_BYTES) {
-      console.warn(`[meet-analysis] recording too large for Whisper (${buf.length} bytes), skipping ${rec.storage_key}`);
       continue;
     }
 
     let text = '';
     try {
-      // No `language` → Whisper auto-detects.
-      text = await ai.transcribe(buf, { mimeType: rec.mime_type || 'audio/webm', filename: 'speaker.webm' });
+      // Handles both small files (direct) and long ones (ffmpeg-segmented).
+      text = await transcribeRecording(absPath, rec.mime_type);
     } catch (err) {
       console.warn(`[meet-analysis] transcribe failed for ${rec.storage_key}:`, err.message);
       continue;
@@ -162,4 +232,56 @@ async function analyzeMeeting(meetingId) {
     .eq('meeting_id', meetingId);
 }
 
-module.exports = { processOnePending };
+/**
+ * Delete the raw audio files for a meeting (and its now-empty directory). The
+ * transcript is already persisted in meeting_transcripts, so the audio is no
+ * longer needed. Best-effort; also zeros the recording rows' storage so nothing
+ * dangles.
+ */
+async function deleteRecordingAudio(meetingId) {
+  const { data: recs } = await supabase.from('meeting_recordings')
+    .select('storage_key').eq('meeting_id', meetingId);
+  let dir = null;
+  for (const rec of recs || []) {
+    if (!rec.storage_key) continue;
+    try {
+      const abs = resolveKey(rec.storage_key);
+      dir = path.dirname(abs);
+      await fsp.unlink(abs).catch(() => {});
+    } catch { /* ignore bad key */ }
+  }
+  // Remove the (now empty) meetings/<id> dir.
+  if (dir) await fsp.rmdir(dir).catch(() => {});
+}
+
+/**
+ * Safety-net sweep: delete any meeting recording audio older than RETENTION_DAYS
+ * regardless of analysis status (e.g. a meeting that never got processed, or
+ * whose cleanup failed). Runs periodically from the worker loop.
+ */
+const RETENTION_DAYS = 7;
+async function sweepOldRecordings() {
+  const cutoff = new Date(Date.now() - RETENTION_DAYS * 24 * 3600 * 1000).toISOString();
+  const { data: old } = await supabase.from('meeting_recordings')
+    .select('meeting_id, storage_key, started_at')
+    .lt('started_at', cutoff)
+    .limit(200);
+  const byMeeting = new Set();
+  for (const rec of old || []) {
+    if (!rec.storage_key) continue;
+    try { await fsp.unlink(resolveKey(rec.storage_key)).catch(() => {}); } catch { /* ignore */ }
+    byMeeting.add(rec.meeting_id);
+  }
+  for (const mId of byMeeting) {
+    // Best-effort dir removal + drop the DB rows so we don't sweep them again.
+    try {
+      const { data: one } = await supabase.from('meeting_recordings')
+        .select('storage_key').eq('meeting_id', mId).limit(1).maybeSingle();
+      if (one?.storage_key) await fsp.rmdir(path.dirname(resolveKey(one.storage_key))).catch(() => {});
+    } catch { /* ignore */ }
+  }
+  if ((old || []).length) console.log(`[meet-analysis] swept ${old.length} old recording file(s)`);
+  return (old || []).length;
+}
+
+module.exports = { processOnePending, sweepOldRecordings };

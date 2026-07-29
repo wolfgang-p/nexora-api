@@ -1132,9 +1132,32 @@ async function getSharedAnalysis(req, res, { params }) {
   ok(res, await buildAnalysisPayload(meeting, analysis));
 }
 
+/**
+ * POST /meetings/:roomId/analysis/retry   (auth or guest participant)
+ * Re-queue a failed analysis: reset it to pending and clear the attempt count so
+ * the worker gives it a fresh set of tries. No-op if it isn't failed.
+ */
+async function retryAnalysis(req, res, { params }) {
+  const { data: meeting } = await supabase.from('meetings')
+    .select('id').eq('room_id', params.roomId).maybeSingle();
+  if (!meeting) return notFound(res);
+
+  const { data: analysis } = await supabase.from('meeting_analysis')
+    .select('meeting_id, status').eq('meeting_id', meeting.id).maybeSingle();
+  if (!analysis) return notFound(res);
+  if (analysis.status !== 'failed') {
+    return ok(res, { ok: true, status: analysis.status }); // nothing to retry
+  }
+  await supabase.from('meeting_analysis')
+    .update({ status: 'pending', attempts: 0, error: null, updated_at: new Date().toISOString() })
+    .eq('meeting_id', meeting.id);
+  ok(res, { ok: true, status: 'pending' });
+}
+
 module.exports = {
   create, listMine, getOne, iceServers, join, leave, update, destroy,
   listMessages, postMessage,
   startNow, kickParticipant, setPdf, clearPdf, uploadPdf, endMeeting,
   recordingChunk, getAnalysis, getSharedAnalysis, ensureAnalysisPending,
+  retryAnalysis,
 };

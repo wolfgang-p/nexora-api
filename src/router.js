@@ -405,6 +405,7 @@ r('POST',   '/meetings/:roomId/pdf-upload',     meetings.uploadPdf,     { auth: 
 // analysis is for participants.
 r('POST',   '/meetings/:roomId/recording-chunk', meetings.recordingChunk, { auth: false, optionalAuth: true });
 r('GET',    '/meetings/:roomId/analysis',       meetings.getAnalysis,   { auth: false, optionalAuth: true });
+r('POST',   '/meetings/:roomId/analysis/retry', meetings.retryAnalysis, { auth: false, optionalAuth: true });
 
 // --- koro.bio (LinkTree) ---
 r('GET',    '/bio/me',                       bio.getMine);

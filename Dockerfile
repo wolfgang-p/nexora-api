@@ -12,9 +12,11 @@ ENV NODE_ENV=production
 WORKDIR /app
 
 # tini   = correct PID 1 so SIGTERM reaches node and index.js shuts down cleanly
-# git     = lets the /status dashboard read the commit history from the
-#           read-only .git that docker-compose mounts at /repo/.git
-RUN apk add --no-cache tini git \
+# git    = lets the /status dashboard read the commit history from the
+#          read-only .git that docker-compose mounts at /repo/.git
+# ffmpeg = used by the meeting-analysis worker to split long per-speaker
+#          recordings into Whisper-sized segments (25 MB / ~25 min cap).
+RUN apk add --no-cache tini git ffmpeg \
  && git config --system --add safe.directory '*'
 
 COPY --from=deps /app/node_modules ./node_modules

@@ -15,10 +15,12 @@
 
 // Loads dotenv (via config) and lets supabase/ai init off the same env.
 require('../config');
-const { processOnePending } = require('./meetingAnalysis');
+const { processOnePending, sweepOldRecordings } = require('./meetingAnalysis');
 
 const IDLE_MS = 15_000; // poll interval when there's nothing to do
 const BUSY_MS = 500;    // brief gap between back-to-back jobs
+const SWEEP_MS = 6 * 3600 * 1000; // clean up old recordings every 6 h
+let lastSweep = 0;
 
 process.on('unhandledRejection', (err) => console.error('[worker:unhandledRejection]', err));
 process.on('uncaughtException', (err) => console.error('[worker:uncaughtException]', err));
@@ -34,6 +36,14 @@ async function loop() {
     } catch (err) {
       console.error('[worker] tick error:', err?.message || err);
     }
+
+    // Periodic retention sweep of old recording audio (best-effort).
+    if (Date.now() - lastSweep > SWEEP_MS) {
+      lastSweep = Date.now();
+      try { await sweepOldRecordings(); }
+      catch (err) { console.error('[worker] sweep error:', err?.message || err); }
+    }
+
     // If we just processed one, come back quickly (there may be more);
     // otherwise idle-poll.
     await sleep(handled ? BUSY_MS : IDLE_MS);
