@@ -216,7 +216,76 @@ async function clearHistoryRequest(req, res, { params }) {
   ok(res, { ok: true });
 }
 
+/**
+ * POST /devices/voip-selftest   (self)
+ *
+ * Fires a REAL incoming-call push (VoIP/PushKit if a voip_token is present,
+ * else the regular high-priority call push) at ALL of the caller's OWN devices.
+ * Lets a single user verify killed-app CallKit ringing end-to-end without a
+ * second person. Returns a diagnostic breakdown so the client can show exactly
+ * what happened (how many voip_tokens were targeted, APNs configured, etc.).
+ */
+async function voipSelfTest(req, res) {
+  const { pushIncomingCall } = require('../push');
+
+  // All of the caller's non-revoked devices.
+  const { data: devices } = await supabase
+    .from('devices')
+    .select('id')
+    .eq('user_id', req.auth.userId)
+    .is('revoked_at', null);
+  const deviceIds = (devices || []).map((d) => d.id);
+
+  // How many of them actually carry a voip_token right now (the crux metric).
+  const { data: voipRows } = await supabase
+    .from('push_tokens')
+    .select('device_id, voip_token')
+    .in('device_id', deviceIds)
+    .not('voip_token', 'is', null);
+  const voipCount = (voipRows || []).length;
+
+  const apnsConfigured = !!(
+    process.env.APNS_KEY_ID && process.env.APNS_TEAM_ID &&
+    process.env.APNS_BUNDLE_ID &&
+    (process.env.APNS_KEY_P8_BASE64 || process.env.APNS_KEY_P8)
+  );
+
+  // Fire the same path a real call uses. Best-effort; never throw at the client.
+  const testCallId = `selftest-${req.auth.deviceId}-${Date.now()}`;
+  try {
+    await pushIncomingCall(deviceIds, {
+      callId: testCallId,
+      conversationId: 'selftest',
+      kind: 'audio',
+      fromName: 'Koro Selbsttest',
+    });
+  } catch (e) {
+    console.error('[voip-selftest]', e?.message || e);
+  }
+
+  audit({
+    userId: req.auth.userId, deviceId: req.auth.deviceId,
+    action: 'devices.voip_selftest',
+    metadata: { deviceIds: deviceIds.length, voipCount, apnsConfigured },
+  });
+
+  ok(res, {
+    ok: true,
+    devices: deviceIds.length,
+    voip_tokens: voipCount,
+    apns_configured: apnsConfigured,
+    apns_production: process.env.APNS_PRODUCTION === '1',
+    call_id: testCallId,
+    hint: voipCount === 0
+      ? 'No voip_token registered → killed-app CallKit will NOT ring; only a backgrounded app gets the regular call push.'
+      : (apnsConfigured
+          ? 'VoIP push dispatched — a fully-closed app should ring CallKit within a few seconds.'
+          : 'voip_token present but APNs not configured on the server → VoIP push cannot be sent.'),
+  });
+}
+
 module.exports = {
   listOwnDevices, listConversationDevices, revokeDevice, updateDevice,
   registerPushToken, requestHistory, listHistoryRequests, clearHistoryRequest,
+  voipSelfTest,
 };

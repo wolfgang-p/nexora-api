@@ -176,6 +176,9 @@ r('DELETE', '/devices/:id/request-history', devices.clearHistoryRequest);
 r('PUT', '/devices/:id', devices.updateDevice);
 r('DELETE', '/devices/:id', devices.revokeDevice);
 r('POST', '/devices/push-token', devices.registerPushToken);
+// Self-test: fire a real VoIP (PushKit) push at the caller's OWN devices so a
+// user can verify killed-app CallKit ringing end-to-end without a second party.
+r('POST', '/devices/voip-selftest', devices.voipSelfTest);
 r('GET', '/conversations/:id/devices', devices.listConversationDevices, { dualAuth: true, scope: 'conversations:read' });
 
 // --- Conversations ---
