@@ -37,6 +37,34 @@ const WHISPER_MAX_BYTES = 24 * 1024 * 1024;
 const SEGMENT_SECONDS = 600;
 
 /** Run ffmpeg with args; resolve on exit 0, reject otherwise. */
+/**
+ * Whisper occasionally hallucinates on near-silent / noisy audio: repeated
+ * "Untertitel…", "Thank you", or — the odd one — chunks of a foreign script
+ * (Chinese/Japanese/Korean/Cyrillic/Arabic) that were never spoken. This drops
+ * segments that are clearly not real German/Latin speech, so the analysis
+ * transcript stays clean.
+ */
+const CJK_ETC = /[　-鿿가-힯Ѐ-ӿ؀-ۿ぀-ヿ]/g;
+const LATIN = /[A-Za-zÀ-ÿ]/g;
+const WHISPER_JUNK = [
+  'untertitel', 'untertitelung', 'amara', 'thank you', 'thanks for watching',
+  'vielen dank', 'für die untertitel', 'copyright', 'wdr', 'zdf',
+];
+
+function isGarbageUtterance(text) {
+  const t = String(text || '').trim();
+  if (t.length < 2) return true;
+  const low = t.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim();
+  if (!low) return true;
+  if (WHISPER_JUNK.some((j) => low === j || low.startsWith(j))) return true;
+  // If a meaningful share of characters is a foreign script, it's a hallucination.
+  const foreign = (t.match(CJK_ETC) || []).length;
+  const latin = (t.match(LATIN) || []).length;
+  if (foreign > 0 && foreign >= latin) return true;      // dominated by CJK/Cyrillic/etc.
+  if (foreign > 2 && latin === 0) return true;           // pure foreign script
+  return false;
+}
+
 function runFfmpeg(args) {
   return new Promise((resolve, reject) => {
     const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -201,6 +229,7 @@ async function analyzeMeeting(meetingId) {
     for (const seg of segments) {
       const text = (seg.text || '').trim();
       if (!text) continue;
+      if (isGarbageUtterance(text)) continue;   // drop Whisper hallucinations / foreign-script junk
       transcriptRows.push({
         meeting_id: meetingId,
         recording_id: rec.id,

@@ -252,15 +252,29 @@ const SYSTEM_PROMPT =
   'und nur wenn wirklich zwei verschiedene Dinge JETZT wichtig sind). Lieber ein ' +
   'exzellenter Vorschlag als mehrere mittelmäßige. Keine Wiederholung von bereits ' +
   'Gesagtem oder Offensichtlichem — wenn es gerade nichts Wertvolles zu sagen gibt, ' +
-  'gib "items":[] zurück.';
+  'gib "items":[] zurück.\n' +
+  'Jeder Vorschlag muss sich im ANSATZ unterscheiden — variiere zwischen: eine ' +
+  'konkrete Frage stellen · ein Nutzenargument · ein Beleg/Zahl · ein Vergleich · ' +
+  'ein Zugeständnis/Angebot · eine emotionale Ansprache. Bringe nie zweimal denselben ' +
+  'Denkweg, auch nicht anders formuliert.';
+
+const CJK_ETC = /[　-鿿가-힯Ѐ-ӿ؀-ۿ぀-ヿ]/g;
+const LATIN = /[A-Za-zÀ-ÿ]/g;
 
 /** Filter out Whisper's silence/hallucination artefacts on tiny chunks. */
 function isNoise(text) {
-  const t = text.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, '').trim();
+  const raw = String(text || '').trim();
+  const t = raw.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, '').trim();
   if (t.length < 2) return true;
   // Common Whisper hallucinations on near-silent audio.
   const junk = ['untertitel', 'untertitelung', 'amara', 'thank you', 'thanks for watching', 'vielen dank'];
-  return junk.some((j) => t === j || t.startsWith(j));
+  if (junk.some((j) => t === j || t.startsWith(j))) return true;
+  // Foreign-script hallucination (Chinese/Japanese/Korean/Cyrillic/Arabic) in a
+  // German meeting → drop it.
+  const foreign = (raw.match(CJK_ETC) || []).length;
+  const latin = (raw.match(LATIN) || []).length;
+  if (foreign > 0 && foreign >= latin) return true;
+  return false;
 }
 
 /** Lowercase, strip punctuation — for fuzzy duplicate detection. */
