@@ -44,6 +44,7 @@ class AssistantSession {
     this.startedAt = Date.now();
     this.lastSuggestAt = 0;
     this.lastRemoteAt = 0;
+    this.recentSuggestions = [];      // last suggestion texts (for de-duplication)
     this.pendingTranscribe = 0;       // in-flight Whisper calls
     this.suggestTimer = null;
     this.proactiveTimer = null;
@@ -134,28 +135,53 @@ class AssistantSession {
 
     const transcript = this.renderTranscript();
     const goal = this.goal || '(kein Ziel angegeben — leite es aus dem Gespräch ab)';
+    // Show the model what it has ALREADY said, so it doesn't repeat itself.
+    const alreadySaid = this.recentSuggestions.length
+      ? `\n\nDU HAST BEREITS FOLGENDES VORGESCHLAGEN — wiederhole es NICHT und ` +
+        `bringe keine leichten Umformulierungen davon. Bringe etwas inhaltlich NEUES ` +
+        `oder gib "items":[] zurück:\n${this.recentSuggestions.map((s) => `- ${s}`).join('\n')}`
+      : '';
     const messages = [
       { role: 'system', content: SYSTEM_PROMPT },
       {
         role: 'user',
         content:
           `ZIEL DES NUTZERS:\n${goal}\n\n` +
-          `GESPRÄCHSVERLAUF (Ich = der Nutzer, Gegenüber = Gesprächspartner):\n${transcript}\n\n` +
+          `GESPRÄCHSVERLAUF (Ich = der Nutzer, Gegenüber = Gesprächspartner):\n${transcript}` +
+          alreadySaid + '\n\n' +
           `Der Auslöser war: ${reason === 'proactive' ? 'proaktiver Vorschlag (keine neue Frage)' : 'das Gegenüber hat gerade gesprochen'}.\n` +
           `Gib 1–2 kurze, sofort umsetzbare Vorschläge als JSON.`,
       },
     ];
 
     try {
-      const { text } = await ai.chat(messages, { json: true, maxTokens: 400, temperature: 0.4 });
+      // Higher temperature = more varied phrasing/angles between calls.
+      const { text } = await ai.chat(messages, { json: true, maxTokens: 400, temperature: 0.8 });
       const parsed = ai.parseJsonLenient(text);
-      const items = normaliseSuggestions(parsed);
+      let items = normaliseSuggestions(parsed);
+      // Drop anything too similar to what we've already sent this session.
+      items = items.filter((it) => !this.isDuplicate(it.text));
       if (items.length && !this.closed) {
+        for (const it of items) this.rememberSuggestion(it.text);
         this.send({ type: 'assistant.suggestion', payload: { items, at: Date.now(), reason } });
       }
     } catch (err) {
       console.error('[assistant] suggest error:', err?.message || err);
     }
+  }
+
+  isDuplicate(text) {
+    const a = normText(text);
+    if (!a) return true;
+    return this.recentSuggestions.some((prev) => {
+      const b = normText(prev);
+      return b === a || jaccard(a, b) >= 0.6;   // ≥60% word overlap = "same"
+    });
+  }
+
+  rememberSuggestion(text) {
+    this.recentSuggestions.push(text);
+    if (this.recentSuggestions.length > 12) this.recentSuggestions.shift();
   }
 
   renderTranscript() {
@@ -235,6 +261,21 @@ function isNoise(text) {
   // Common Whisper hallucinations on near-silent audio.
   const junk = ['untertitel', 'untertitelung', 'amara', 'thank you', 'thanks for watching', 'vielen dank'];
   return junk.some((j) => t === j || t.startsWith(j));
+}
+
+/** Lowercase, strip punctuation — for fuzzy duplicate detection. */
+function normText(s) {
+  return String(s || '').toLowerCase().replace(/[^\p{L}\p{N} ]/gu, ' ').replace(/\s+/g, ' ').trim();
+}
+
+/** Word-set Jaccard similarity (0..1). Used to catch reworded repeats. */
+function jaccard(a, b) {
+  const A = new Set(a.split(' ').filter((w) => w.length > 3));
+  const B = new Set(b.split(' ').filter((w) => w.length > 3));
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter++;
+  return inter / (A.size + B.size - inter);
 }
 
 function normaliseSuggestions(parsed) {
