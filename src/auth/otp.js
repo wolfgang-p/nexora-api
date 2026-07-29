@@ -211,16 +211,53 @@ async function verifyOtp(req, res) {
   const { deviceFingerprint } = require('../util/crypto');
   const fingerprint = deviceFingerprint(pubKeyBuffer);
 
-  const { data: device, error: devErr } = await supabase.from('devices').insert({
-    user_id: user.id,
-    kind: deviceInput.kind,
-    label: deviceInput.label || null,
-    identity_public_key: pubKeyB64,
-    fingerprint,
-    user_agent: deviceInput.user_agent || req.headers['user-agent'] || null,
-    ip_hint: req.socket?.remoteAddress || null,
-  }).select('*').single();
-  if (devErr) return serverError(res, 'Could not register device', devErr);
+  // REUSE the existing device for this (user, identity_public_key) instead of
+  // always inserting a new one. The mobile client keeps the SAME device keypair
+  // across logout/re-login (it never wipes the private key), so re-login must
+  // land on the SAME device_id — otherwise historical message ciphertexts (which
+  // are addressed per device_id) can't be opened and every old message shows as
+  // "not decryptable". Only insert a fresh row when no matching device exists.
+  let device;
+  {
+    const { data: existing } = await supabase
+      .from('devices')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('identity_public_key', pubKeyB64)
+      .is('revoked_at', null)
+      .order('enrolled_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (existing) {
+      // Refresh mutable metadata; keep the same id + fingerprint + history binding.
+      const { data: updated } = await supabase
+        .from('devices')
+        .update({
+          kind: deviceInput.kind,
+          label: deviceInput.label || existing.label || null,
+          user_agent: deviceInput.user_agent || req.headers['user-agent'] || existing.user_agent || null,
+          ip_hint: req.socket?.remoteAddress || existing.ip_hint || null,
+          last_seen_at: new Date().toISOString(),
+        })
+        .eq('id', existing.id)
+        .select('*')
+        .single();
+      device = updated || existing;
+    } else {
+      const { data: created, error: devErr } = await supabase.from('devices').insert({
+        user_id: user.id,
+        kind: deviceInput.kind,
+        label: deviceInput.label || null,
+        identity_public_key: pubKeyB64,
+        fingerprint,
+        user_agent: deviceInput.user_agent || req.headers['user-agent'] || null,
+        ip_hint: req.socket?.remoteAddress || null,
+      }).select('*').single();
+      if (devErr) return serverError(res, 'Could not register device', devErr);
+      device = created;
+    }
+  }
 
   // 2FA gate — if this user has TOTP enabled, don't issue a session.
   // Instead, return a short-lived login_token; the client must POST to
@@ -292,16 +329,12 @@ async function verifyOtp(req, res) {
  */
 const ROTATION_GRACE_DAYS = 7;
 
-// A refresh response can be lost in transit (flaky mobile network, app
-// backgrounded mid-request): the server rotated the token, but the client
-// never received the successor and still holds the now-rotated old token.
-// On the next attempt that old token looks like a "reuse" — but it is NOT
-// theft, just a retry. If the rotation happened within this short window we
-// treat it as a benign retry: NO global session revoke (which would log the
-// user out), just a soft 401 so the client keeps its tokens and tries again.
-// A genuine replay attack surfaces much later than this, so real theft
-// detection is preserved.
-const REUSE_GRACE_SECONDS = 60;
+// Legacy fallback only. Rotated rows created before migration 0032 have no
+// recorded successor, so we can't hand the successor back idempotently. For
+// those we still fall back to a (now generous) time-based grace so a lost
+// response doesn't log the user out. New rows never hit this path — they use
+// the stored successor instead, which is time-unbounded and fully recoverable.
+const REUSE_GRACE_SECONDS = 7 * 86400; // 7 days
 
 async function refresh(req, res) {
   const body = await readJson(req).catch(() => null);
@@ -318,16 +351,108 @@ async function refresh(req, res) {
 
   if (!sess) return unauthorized(res, 'Invalid refresh token');
 
-  // THEFT DETECTION — the presented token was already rotated out, which
-  // means someone (user OR attacker) is replaying an older copy.
+  // THE PRESENTED TOKEN WAS ALREADY ROTATED OUT.
+  //
+  // This is the crux of "I get logged out after a while and then can't decrypt
+  // my messages". Almost always it is NOT theft: the server rotated the token
+  // and minted a successor, but the client never received the response (network
+  // dropped, app backgrounded mid-flight) and still holds the old token. On the
+  // next app open — seconds OR many days later — it presents that old token.
+  //
+  // Idempotent recovery: we recorded which successor this row minted
+  // (successor_token_hash). If that successor is still the CURRENT live token
+  // (not itself rotated, not revoked, not expired), the client simply lost the
+  // response — so we hand the SAME successor back. No time limit, no revoke,
+  // fully recoverable. Only a genuine fork in the rotation chain (the successor
+  // was itself already rotated onward by someone else) is treated as theft.
   if (sess.rotated_at) {
     const rotatedAgoMs = Date.now() - new Date(sess.rotated_at).getTime();
 
-    // Grace window: a freshly-rotated token almost always means the client
-    // lost the successful response and is simply retrying. Don't punish that
-    // — no global revoke, no logout. Just a soft 401; the client keeps its
-    // stored tokens and retries (single-flight on the client collapses the
-    // dupes). This is the fix for "I keep getting logged out after a while".
+    // Preferred path (rows from migration 0032 onward): walk the successor chain
+    // this token started to its live tip.
+    //
+    // The client may have lost SEVERAL responses in a row (each rotation minted a
+    // successor the client never saw). Presenting any ancestor token must still
+    // recover the account, so we follow successor_token_hash forward until we
+    // reach either the live tip (rotate it forward, return that — idempotent) or
+    // a revoked row (genuine theft — the chain was locked out already).
+    if (sess.successor_token_hash) {
+      let node = sess;
+      let tip = null;          // the live (non-rotated) row at the end of the chain
+      let revoked = false;     // chain ran into a revoked row → theft
+      const MAX_HOPS = 64;     // safety bound; real chains are 1–2 hops
+      for (let hop = 0; hop < MAX_HOPS && node.successor_token_hash; hop++) {
+        const { data: next } = await supabase
+          .from('sessions')
+          .select('*')
+          .eq('refresh_token_hash', node.successor_token_hash)
+          .maybeSingle();
+        if (!next) break;            // pruned — fall through to time-based grace
+        if (next.revoked_at) { revoked = true; break; }
+        if (!next.rotated_at) { tip = next; break; } // reached the live tip
+        node = next;                 // keep walking
+      }
+
+      if (tip && new Date(tip.expires_at) >= new Date()) {
+        // Ancestor of the current live token → the client lost our earlier
+        // response(s). Rotate the live tip forward one step and return THAT, so
+        // the client continues exactly where it left off. No logout, no
+        // re-login, history stays readable. Single-use + idempotent: another
+        // lost response just walks the chain again and repeats this safely.
+        const chainedToken = randomBase64Url(48);
+        const chainedHash = sha256(chainedToken);
+        const chainedExpires = new Date(Date.now() + config.jwt.refreshTtl * 1000).toISOString();
+
+        await supabase.from('sessions').update({
+          rotated_at: new Date().toISOString(),
+          last_used_at: new Date().toISOString(),
+          successor_token_hash: chainedHash,
+        }).eq('id', tip.id);
+
+        const { error: chainErr } = await supabase.from('sessions').insert({
+          user_id: tip.user_id,
+          device_id: tip.device_id,
+          refresh_token_hash: chainedHash,
+          expires_at: chainedExpires,
+        });
+        if (chainErr) return serverError(res, 'Could not recover session', chainErr);
+
+        audit({
+          userId: sess.user_id, deviceId: sess.device_id,
+          action: 'auth.refresh.lost_response_recovered',
+          targetType: 'session', targetId: sess.id,
+          metadata: { rotated_ago_ms: rotatedAgoMs },
+          req,
+        });
+        const accessToken = signAccess({ userId: tip.user_id, deviceId: tip.device_id });
+        return ok(res, { access_token: accessToken, refresh_token: chainedToken });
+      }
+
+      // The chain led to a revoked row → this device's sessions were already
+      // locked out (genuine theft, or an explicit logout). Re-affirm the revoke.
+      if (revoked) {
+        await supabase.from('sessions')
+          .update({ revoked_at: new Date().toISOString() })
+          .eq('user_id', sess.user_id)
+          .is('revoked_at', null);
+        audit({
+          userId: sess.user_id, deviceId: sess.device_id,
+          action: 'auth.refresh.reuse_detected',
+          targetType: 'session', targetId: sess.id,
+          metadata: { ip: req.socket?.remoteAddress || null, reason: 'chain_revoked' },
+          req,
+        });
+        return unauthorized(res, 'Refresh token reuse detected — all sessions revoked', { code: 'session_revoked' });
+      }
+      // Live tip is expired, or the chain was pruned before reaching a live row
+      // → fall through to the time-based grace / expiry handling below.
+    }
+
+    // Legacy fallback (pre-0032 rows without a stored successor). We can't
+    // replay a successor we never recorded, so use a generous time-based grace:
+    // a recently-rotated token is treated as a benign lost-response retry (soft
+    // 401, no revoke — the client keeps its tokens and retries). Only a very old
+    // rotated token is treated as genuine theft.
     if (rotatedAgoMs <= REUSE_GRACE_SECONDS * 1000) {
       audit({
         userId: sess.user_id, deviceId: sess.device_id,
@@ -339,8 +464,6 @@ async function refresh(req, res) {
       return unauthorized(res, 'Refresh token already rotated — retry');
     }
 
-    // Rotated long ago → genuine replay. Can't tell which side is legitimate,
-    // so lock every live session of this user out.
     await supabase.from('sessions')
       .update({ revoked_at: new Date().toISOString() })
       .eq('user_id', sess.user_id)
@@ -360,7 +483,9 @@ async function refresh(req, res) {
     return unauthorized(res, 'Session expired');
   }
 
-  // Rotate: mint a new token, insert a new row, mark the old one rotated.
+  // Rotate: mint a new token, insert a new row, mark the old one rotated AND
+  // record the successor hash so a lost response can be recovered idempotently
+  // (see the rotated-token branch above).
   const newToken = randomBase64Url(48);
   const newHash = sha256(newToken);
   const newExpires = new Date(Date.now() + config.jwt.refreshTtl * 1000).toISOString();
@@ -368,6 +493,7 @@ async function refresh(req, res) {
   await supabase.from('sessions').update({
     rotated_at: new Date().toISOString(),
     last_used_at: new Date().toISOString(),
+    successor_token_hash: newHash,
   }).eq('id', sess.id);
 
   const { error: insertErr } = await supabase.from('sessions').insert({

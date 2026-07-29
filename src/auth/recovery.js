@@ -85,19 +85,52 @@ async function verifyAndLogin(req, res) {
     return unauthorized(res, 'Invalid code');
   }
 
-  // Register the new device + mint session — same shape as verifyOtp.
+  // Register the device + mint session — same shape as verifyOtp. REUSE the
+  // existing device for this (user, identity_public_key) instead of inserting a
+  // new one on every recovery, so re-login lands on the SAME device_id and old
+  // per-device message ciphertexts stay decryptable (no "not decryptable").
   const pubKey = String(deviceInput.identity_public_key);
   const fingerprint = deviceFingerprint(Buffer.from(pubKey, 'base64'));
-  const { data: device, error: devErr } = await supabase.from('devices').insert({
-    user_id: user.id,
-    kind: deviceInput.kind,
-    label: deviceInput.label || null,
-    identity_public_key: pubKey,
-    fingerprint,
-    user_agent: deviceInput.user_agent || req.headers['user-agent'] || null,
-    ip_hint: req.socket?.remoteAddress || null,
-  }).select('*').single();
-  if (devErr) return serverError(res, 'Device register failed', devErr);
+  let device;
+  {
+    const { data: existing } = await supabase
+      .from('devices')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('identity_public_key', pubKey)
+      .is('revoked_at', null)
+      .order('enrolled_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (existing) {
+      const { data: updated } = await supabase
+        .from('devices')
+        .update({
+          kind: deviceInput.kind,
+          label: deviceInput.label || existing.label || null,
+          user_agent: deviceInput.user_agent || req.headers['user-agent'] || existing.user_agent || null,
+          ip_hint: req.socket?.remoteAddress || existing.ip_hint || null,
+          last_seen_at: new Date().toISOString(),
+        })
+        .eq('id', existing.id)
+        .select('*')
+        .single();
+      device = updated || existing;
+    } else {
+      const { data: created, error: devErr } = await supabase.from('devices').insert({
+        user_id: user.id,
+        kind: deviceInput.kind,
+        label: deviceInput.label || null,
+        identity_public_key: pubKey,
+        fingerprint,
+        user_agent: deviceInput.user_agent || req.headers['user-agent'] || null,
+        ip_hint: req.socket?.remoteAddress || null,
+      }).select('*').single();
+      if (devErr) return serverError(res, 'Device register failed', devErr);
+      device = created;
+    }
+  }
 
   const accessToken = signAccess({ userId: user.id, deviceId: device.id });
   const refreshToken = randomBase64Url(48);
