@@ -2,6 +2,7 @@
 
 const { supabase } = require('../db/supabase');
 const { broadcastToDevices, sendTo } = require('./dispatch');
+const assistant = require('../assistant');
 
 /**
  * Route a single authenticated WS message from a client.
@@ -137,6 +138,28 @@ async function route(ws, data) {
         payload: data.payload,
       });
     }
+
+    // ── Live AI copilot (private, per-socket) ──────────────────────────────
+    //
+    // The copilot is PRIVATE to the user who turns it on. Audio chunks and
+    // suggestions never leave this socket — no fan-out, no other participant
+    // sees anything. We bind the session's reply channel to THIS ws so results
+    // come straight back here (no cross-instance concern).
+    case 'assistant.start': {
+      const goal = typeof data.goal === 'string' ? data.goal : (data.payload?.goal || '');
+      return assistant.startSession(deviceId, (payload) => send(ws, payload), { goal });
+    }
+    case 'assistant.goal': {
+      const goal = typeof data.goal === 'string' ? data.goal : (data.payload?.goal || '');
+      return assistant.updateGoal(deviceId, goal);
+    }
+    case 'assistant.audio': {
+      // { speaker:'self'|'remote', pcm:<base64 webm/opus>, mime? }
+      const p = data.payload || data;
+      return assistant.pushAudio(deviceId, p.speaker, p.pcm, p.mime);
+    }
+    case 'assistant.stop':
+      return assistant.stopSession(deviceId, 'user');
 
     default:
       return send(ws, { type: 'error', error: `unknown_type: ${data.type}` });

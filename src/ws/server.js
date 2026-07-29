@@ -5,6 +5,7 @@ const { verifyAccess } = require('../auth/jwt');
 const { supabase } = require('../db/supabase');
 const { register, unregister, sendTo, startBus } = require('./dispatch');
 const { route } = require('./router');
+const assistant = require('../assistant');
 
 const AUTH_TIMEOUT_MS = 5_000;
 
@@ -111,7 +112,12 @@ function attachWsServer(httpServer) {
 
     ws.on('close', () => {
       clearTimeout(authTimer);
-      if (ws.auth) unregister(ws.auth.deviceId, ws);
+      if (ws.auth) {
+        // Tear down any live copilot session for this device (frees timers +
+        // stops further Whisper/AI calls the moment the tab closes).
+        try { assistant.stopSession(ws.auth.deviceId, 'disconnect'); } catch {}
+        unregister(ws.auth.deviceId, ws);
+      }
     });
   });
 
