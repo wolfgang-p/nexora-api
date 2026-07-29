@@ -36,11 +36,24 @@ async function pushToDevices(deviceIds, opts = {}) {
     : deviceIds.filter((id) => !deviceOnline(id));
   if (!targets.length) return;
 
-  const { data: tokens } = await supabase
+  const { data: rawTokens } = await supabase
     .from('push_tokens')
     .select('device_id, token, platform')
     .in('device_id', targets);
-  if (!tokens?.length) return;
+  if (!rawTokens?.length) return;
+
+  // DEDUPE BY TOKEN STRING. The same physical phone can have MANY device rows
+  // (each historical login used to mint a fresh device), all carrying the SAME
+  // Expo push token. Without this, one message fanned out to N stale devices
+  // sends N identical banners — the "I get ~10 notifications per message" bug.
+  // One push per unique token = one banner per real device.
+  const seen = new Set();
+  const tokens = [];
+  for (const t of rawTokens) {
+    if (!t.token || seen.has(t.token)) continue;
+    seen.add(t.token);
+    tokens.push(t);
+  }
 
   const messages = [];
   for (const t of tokens) {
@@ -181,12 +194,23 @@ async function pushVoipCall(deviceIds, payload) {
     return []; // not configured — silently skip (Expo push handles all devices)
   }
 
-  const { data: tokens } = await supabase
+  const { data: rawVoip } = await supabase
     .from('push_tokens')
     .select('device_id, voip_token')
     .in('device_id', deviceIds)
     .not('voip_token', 'is', null);
-  if (!tokens?.length) return [];
+  if (!rawVoip?.length) return [];
+
+  // Dedupe by voip_token so a phone with several stale device rows rings CallKit
+  // exactly once (same reason as the regular-push dedupe above).
+  const voipSeen = new Set();
+  const tokens = [];
+  for (const t of rawVoip) {
+    if (!t.voip_token || voipSeen.has(t.voip_token)) continue;
+    voipSeen.add(t.voip_token);
+    tokens.push(t);
+  }
+  if (!tokens.length) return [];
 
   // Lazy-load the APNs HTTP/2 client so projects without the dep don't
   // explode at boot. Add to the API's package.json: "@parse/node-apn".
