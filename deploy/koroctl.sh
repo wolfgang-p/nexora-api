@@ -342,6 +342,103 @@ do_log() {
 }
 
 # =============================================================================
+#  TURN  — verifiziert, dass WebRTC-Anrufe ECHTE TURN-Relays bekommen
+# =============================================================================
+#  Warum: buildIceServers() fällt bei einem Fehler STILL auf STUN-only zurück
+#  (kein 500). STUN-only heißt: Anrufe zwischen verschiedenen Netzen (WLAN ↔
+#  Mobilfunk, beide hinter symmetrischem/CGNAT) scheitern mit schwarzem Bild /
+#  keinem Ton. Dieser Check macht den stillen Fallback sichtbar.
+#
+#  Zwei Prüfungen, beide IM laufenden Container (echte Env, echter Code-Pfad,
+#  echter Netz-Egress) — so wird genau das getestet, was Produktion ausliefert:
+#    1) buildIceServers() aufrufen und prüfen, ob turn:/turns: enthalten ist
+#    2) Cloudflare-TURN-Credentials direkt minten (HTTP-Status)
+do_turn() {
+  phase "TURN-Check  $(now)"
+  local inst=""
+  for c in koro-api-blue koro-api-green; do
+    docker inspect "$c" >/dev/null 2>&1 && [ "$(state_of "$c")" = "running" ] && { inst="$c"; break; }
+  done
+  if [ -z "$inst" ]; then
+    err "Keine laufende koro-api-Instanz (blue/green) — starte den Stack zuerst: koroctl start"
+    return 1
+  fi
+  info "Prüfe im Container: ${C_BOLD}$inst${C_RESET}"
+
+  # ── 1) Welche Env-Variablen sind gesetzt? ────────────────────────────────
+  #  Hinweis: TURN_KEY_ID/TURN_TOKEN (Cloudflare) UND TURN_URLS (statisch) sind
+  #  ALTERNATIVEN — eines von beiden reicht. Darum wird ein leeres Feld hier nur
+  #  informativ (nicht als Fehler) gezeigt; der echte Fehlerfall ist „gar keins".
+  phase "1/3  TURN-Konfiguration (im Container)"
+  local hascf hasstatic
+  hascf="$(docker exec "$inst" sh -c '[ -n "$TURN_KEY_ID" ] && [ -n "$TURN_TOKEN" ] && echo 1 || echo 0' 2>/dev/null)"
+  hasstatic="$(docker exec "$inst" sh -c '[ -n "$TURN_URLS" ] && echo 1 || echo 0' 2>/dev/null)"
+  [ "$hascf" = "1" ]     && info "TURN_KEY_ID + TURN_TOKEN gesetzt (Cloudflare)"   || info "TURN_KEY_ID/TURN_TOKEN nicht gesetzt (kein Cloudflare-Modus)"
+  [ "$hasstatic" = "1" ] && info "TURN_URLS gesetzt (statische Server)"            || info "TURN_URLS nicht gesetzt (kein statischer Modus)"
+  if [ "$hascf" = "1" ]; then info "→ Modus: ${C_BOLD}Cloudflare Realtime TURN${C_RESET} (ephemere Credentials)"
+  elif [ "$hasstatic" = "1" ]; then info "→ Modus: ${C_BOLD}statische TURN-Server${C_RESET} (TURN_URLS)"
+  else warn "KEIN TURN konfiguriert — Anrufe über verschiedene Netze werden scheitern."; fi
+
+  # ── 2) buildIceServers() real aufrufen (echter Code-Pfad) ────────────────
+  phase "2/3  buildIceServers() — liefert die API echte TURN-Relays?"
+  local ice
+  ice="$(docker exec "$inst" node -e '
+    require("./src/calls/ice").buildIceServers()
+      .then((s) => {
+        const flat = JSON.stringify(s);
+        const hasTurn = /turns?:/i.test(flat);
+        const urls = s.flatMap(x => Array.isArray(x.urls) ? x.urls : [x.urls]);
+        const turns = urls.filter(u => /^turns?:/i.test(u));
+        console.log(JSON.stringify({ hasTurn, count: s.length, turns }));
+      })
+      .catch((e) => { console.log(JSON.stringify({ error: String(e && e.message || e) })); });
+  ' 2>/dev/null)"
+
+  if printf '%s' "$ice" | grep -q '"hasTurn":true'; then
+    ok "API liefert TURN-Relays aus ✓"
+    # die konkreten turn:-URLs zeigen (aus dem JSON gefischt, ohne jq)
+    printf '%s' "$ice" | grep -oE 'turns?:[^"]+' | sort -u | sed 's/^/        /'
+  elif printf '%s' "$ice" | grep -q '"hasTurn":false'; then
+    err "API liefert NUR STUN aus — TURN fehlt! Anrufe netzübergreifend werden scheitern."
+    warn "Ursache meist: Cloudflare-Mint schlägt fehl (falsches TURN_TOKEN/TURN_KEY_ID) oder Egress geblockt."
+    warn "Details:  koroctl log ${inst#koro-api-} | grep -i '\\[ice\\]'"
+  elif printf '%s' "$ice" | grep -q '"error"'; then
+    err "buildIceServers() warf einen Fehler:"
+    printf '%s' "$ice" | sed 's/^/        /'
+  else
+    warn "Unerwartete Antwort von buildIceServers():"
+    printf '%s\n' "${ice:-<leer>}" | sed 's/^/        /'
+  fi
+
+  # ── 3) Cloudflare-Mint direkt testen (nur wenn CF-Modus) ─────────────────
+  phase "3/3  Cloudflare-TURN-Mint (direkter HTTP-Test)"
+  if [ "$hascf" != "1" ]; then
+    info "Übersprungen — kein Cloudflare-Modus (TURN_KEY_ID/TURN_TOKEN nicht gesetzt)."
+  else
+    local http
+    http="$(docker exec "$inst" node -e '
+      const id = process.env.TURN_KEY_ID, tok = process.env.TURN_TOKEN;
+      fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${id}/credentials/generate-ice-servers`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${tok}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ ttl: 600 }),
+      }).then(r => { console.log(r.status); process.exit(0); })
+        .catch(e => { console.log("ERR:" + (e && e.message || e)); process.exit(0); });
+    ' 2>/dev/null)"
+    case "$http" in
+      201|200) ok "Cloudflare-Mint erfolgreich (HTTP $http) — Credentials gültig, Egress frei." ;;
+      401|403) err "Cloudflare-Mint abgelehnt (HTTP $http) — TURN_TOKEN/TURN_KEY_ID falsch oder widerrufen." ;;
+      ERR:*)   err "Cloudflare nicht erreichbar aus dem Container: ${http#ERR:} (Egress/Firewall?)" ;;
+      '')      warn "Keine Antwort vom Mint-Test (Node-Fehler im Container?)." ;;
+      *)       warn "Cloudflare-Mint unerwarteter HTTP-Status: $http" ;;
+    esac
+  fi
+
+  phase "TURN-Check abgeschlossen"
+  printf '\n'
+}
+
+# =============================================================================
 #  Dispatch
 # =============================================================================
 CMD="${1:-}"
@@ -350,6 +447,7 @@ case "$CMD" in
   stop)    require_root stop;    do_stop ;;
   restart) require_root restart; do_restart ;;
   status)  do_status ;;
+  turn)    do_turn ;;
   log|logs) shift; do_log "$@" ;;
   *)
     printf 'koroctl — koro-api Stack-Steuerung\n\n'
@@ -358,6 +456,8 @@ case "$CMD" in
     printf '  stop           sanft herunterfahren (koro-api drained zuerst), entfernt nichts\n'
     printf '  restart        stop, dann start\n'
     printf '  status         ausführlicher Zustand (Container, edge, DB, Commit, App-Config)\n'
+    printf '  turn           prüft, ob WebRTC-Anrufe echte TURN-Relays bekommen\n'
+    printf '                 (kein stiller STUN-only-Fallback) — Cloudflare-Mint inkl.\n'
     printf '  log <ziel>     Logs ansehen, neueste zuerst — ziel: blue|green|redis\n'
     printf '                 z.B.  koroctl log green        (letzte 200 Zeilen)\n'
     printf '                       koroctl log blue 500     (letzte 500 Zeilen)\n'
