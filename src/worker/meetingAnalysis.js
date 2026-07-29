@@ -22,6 +22,7 @@
 const fsp = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { supabase } = require('../db/supabase');
 const { resolveKey, planRecording } = require('../media/fs');
@@ -324,8 +325,9 @@ async function finalizeStuckRecordings() {
     if (!meeting || !meeting.ended_at) continue;
 
     const p = planRecording(row.meeting_id, 'full', 'webm');
+    const abs = resolveKey(p.storageKey);
     let size = 0;
-    try { size = (await fsp.stat(resolveKey(p.storageKey))).size; } catch { size = 0; }
+    try { size = (await fsp.stat(abs)).size; } catch { size = 0; }
 
     if (size <= 0) {
       await supabase.from('meeting_analysis')
@@ -333,10 +335,18 @@ async function finalizeStuckRecordings() {
         .eq('meeting_id', row.meeting_id);
       continue;
     }
+    // media_objects.sha256 is NOT NULL — hash the file first.
+    let sha256;
+    try {
+      const h = crypto.createHash('sha256');
+      h.update(await fsp.readFile(abs));
+      sha256 = h.digest('hex');
+    } catch (err) { console.warn('[meet-analysis] fullrec hash failed:', err.message); continue; }
+
     const { data: media, error } = await supabase.from('media_objects').insert({
-      conversation_id: null, storage_key: p.storageKey, mime_type: 'video/webm', size_bytes: size,
+      conversation_id: null, storage_key: p.storageKey, mime_type: 'video/webm', size_bytes: size, sha256,
     }).select('id').single();
-    if (error) continue;
+    if (error) { console.warn('[meet-analysis] fullrec insert failed:', error.message); continue; }
     await supabase.from('meeting_analysis')
       .update({ full_recording_media_id: media.id, full_recording_status: 'ready', updated_at: new Date().toISOString() })
       .eq('meeting_id', row.meeting_id);

@@ -1272,6 +1272,17 @@ async function fullRecordingChunk(req, res, { params, query }) {
  * acts when the current status is 'recording' or 'processing' (never clobbers an
  * already-ready recording, and doesn't invent one where none was started).
  */
+/** Stream a file and return its sha256 hex digest (media_objects requires it). */
+function sha256File(absPath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const s = fs.createReadStream(absPath);
+    s.on('data', (c) => hash.update(c));
+    s.on('end', () => resolve(hash.digest('hex')));
+    s.on('error', reject);
+  });
+}
+
 async function finalizeFullRecordingIfPending(meetingId) {
   const { data: row } = await supabase.from('meeting_analysis')
     .select('full_recording_status, full_recording_media_id').eq('meeting_id', meetingId).maybeSingle();
@@ -1291,13 +1302,19 @@ async function finalizeFullRecordingIfPending(meetingId) {
     return null;
   }
 
+  // media_objects.sha256 is NOT NULL — hash the file before inserting.
+  let sha256;
+  try { sha256 = await sha256File(p.absPath); }
+  catch (err) { console.warn('[fullrec.finalize] hash failed', err?.message || err); return null; }
+
   const { data: media, error } = await supabase.from('media_objects').insert({
     conversation_id: null,
     storage_key: p.storageKey,
     mime_type: 'video/webm',
     size_bytes: size,
+    sha256,
   }).select('id').single();
-  if (error) return null;
+  if (error) { console.warn('[fullrec.finalize] insert failed', error.message); return null; }
 
   await supabase.from('meeting_analysis')
     .update({
