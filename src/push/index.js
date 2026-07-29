@@ -213,7 +213,10 @@ async function pushVoipCall(deviceIds, payload) {
   if (!deviceIds?.length) return [];
   const apnsKey = resolveApnsKey();
   if (!process.env.APNS_KEY_ID || !process.env.APNS_TEAM_ID || !apnsKey || !process.env.APNS_BUNDLE_ID) {
-    return []; // not configured — silently skip (Expo push handles all devices)
+    // Not configured — the #1 reason "it doesn't ring when the app is closed".
+    // Log LOUDLY once-ish so the gap is visible instead of silently swallowed.
+    console.warn('[voip-push] SKIP: APNs not fully configured (need APNS_KEY_ID, APNS_TEAM_ID, APNS_KEY_P8[_BASE64], APNS_BUNDLE_ID). Killed-app ringing is DISABLED — only foreground/WS ringing works.');
+    return []; // Expo push handles all devices
   }
 
   const { data: rawVoip } = await supabase
@@ -221,7 +224,12 @@ async function pushVoipCall(deviceIds, payload) {
     .select('device_id, voip_token')
     .in('device_id', deviceIds)
     .not('voip_token', 'is', null);
-  if (!rawVoip?.length) return [];
+  if (!rawVoip?.length) {
+    // No device in this call has a registered voip_token → the app never
+    // registered PushKit (old build without prebuild, or registration failed).
+    console.warn(`[voip-push] SKIP: none of the ${deviceIds.length} target device(s) has a voip_token. The iOS app must run a PushKit build and register after login.`);
+    return [];
+  }
 
   // Dedupe by voip_token so a phone with several stale device rows rings CallKit
   // exactly once (same reason as the regular-push dedupe above).
@@ -268,9 +276,16 @@ async function pushVoipCall(deviceIds, payload) {
   try {
     const targets = tokens.map((t) => t.voip_token);
     const result = await provider.send(note, targets);
+    const sent = (result.sent || []).length;
+    const failed = (result.failed || []).length;
+    console.log(`[voip-push] APNs result: sent=${sent} failed=${failed} topic=${note.topic} production=${process.env.APNS_PRODUCTION === '1'}`);
     const failedTokens = new Set();
     for (const f of result.failed || []) {
       failedTokens.add(f.device);
+      // Surface WHY it failed — the usual culprit is a sandbox/production
+      // mismatch (dev build token sent to production APNs or vice versa →
+      // BadDeviceToken), which is exactly "built it but still doesn't ring".
+      console.warn(`[voip-push] FAILED token: status=${f?.status} reason=${f?.response?.reason || 'unknown'} — if BadDeviceToken, your app's aps-environment (dev vs prod) does not match APNS_PRODUCTION on the server.`);
       // Common: BadDeviceToken when a device reinstalls. Drop the
       // VoIP token so we don't keep retrying a dead one.
       if (f?.response?.reason === 'BadDeviceToken' || f?.status === '410') {

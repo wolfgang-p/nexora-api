@@ -342,6 +342,90 @@ do_log() {
 }
 
 # =============================================================================
+#  VOIP  — diagnostiziert, warum ein Anruf bei GESCHLOSSENER App nicht klingelt
+# =============================================================================
+#  iOS klingelt bei geschlossener/minimierter App NUR über PushKit (VoIP-Push).
+#  Bricht das irgendwo, klingelt es still gar nicht. Dieses Kommando prüft jede
+#  Stelle der Kette IM laufenden Container:
+#    1) APNs-Env vollständig?  2) Wie viele Geräte haben einen voip_token?
+#    3) Optional: echten VoIP-Test-Push an eine Telefonnummer senden (APNs-Verdikt)
+#
+#  Aufruf:
+#    koroctl voip                 nur Konfig + Token-Übersicht
+#    koroctl voip +4367612345678  zusätzlich: echten Test-Push an dieses Handy
+do_voip() {
+  phase "VoIP-Push-Check  $(now)"
+  local inst=""
+  for c in koro-api-blue koro-api-green; do
+    docker inspect "$c" >/dev/null 2>&1 && [ "$(state_of "$c")" = "running" ] && { inst="$c"; break; }
+  done
+  [ -z "$inst" ] && { err "Keine laufende koro-api-Instanz — koroctl start"; return 1; }
+  info "Prüfe im Container: ${C_BOLD}$inst${C_RESET}"
+
+  # ── 1) APNs-Env ──────────────────────────────────────────────────────────
+  phase "1/3  APNs-Konfiguration"
+  env_flag "$inst" APNS_KEY_ID
+  env_flag "$inst" APNS_TEAM_ID
+  env_flag "$inst" APNS_BUNDLE_ID
+  # Key kann als _BASE64 ODER roh vorliegen — einer reicht:
+  local haskey
+  haskey="$(docker exec "$inst" sh -c '[ -n "$APNS_KEY_P8_BASE64" ] || [ -n "$APNS_KEY_P8" ] && echo 1 || echo 0' 2>/dev/null)"
+  [ "$haskey" = "1" ] && ok "APNs-Key gesetzt (P8_BASE64 oder P8)" || err "APNs-Key FEHLT (APNS_KEY_P8_BASE64 oder APNS_KEY_P8)"
+  local prod
+  prod="$(docker exec "$inst" printenv APNS_PRODUCTION 2>/dev/null)"
+  info "APNS_PRODUCTION=${prod:-<leer>}  →  ${C_BOLD}$([ "$prod" = "1" ] && echo 'Production-APNs (TestFlight/Store-Builds)' || echo 'Sandbox-APNs (lokale Dev-Builds)')${C_RESET}"
+  warn "Muss zum Build passen: TestFlight ⇒ APNS_PRODUCTION=1 · lokaler Dev-Build ⇒ APNS_PRODUCTION=0. Mismatch ⇒ BadDeviceToken ⇒ klingelt nicht."
+
+  # ── 2) Registrierte VoIP-Token ───────────────────────────────────────────
+  phase "2/3  Registrierte voip_token in der DB"
+  local count
+  count="$(docker exec "$inst" node -e '
+    const { supabase } = require("./src/db/supabase");
+    supabase.from("push_tokens").select("device_id").not("voip_token","is",null)
+      .then(r => { console.log((r.data||[]).length); process.exit(0); })
+      .catch(() => { console.log("ERR"); process.exit(0); });
+  ' 2>/dev/null)"
+  if [ "$count" = "ERR" ]; then warn "DB-Abfrage fehlgeschlagen."
+  elif [ "${count:-0}" -gt 0 ] 2>/dev/null; then ok "$count Gerät(e) mit voip_token registriert"
+  else err "0 Geräte mit voip_token! Die App hat PushKit nie registriert → kein Killed-App-Klingeln. (PushKit-Build? Nach Login eingeloggt?)"; fi
+
+  # ── 3) Optionaler echter Test-Push ───────────────────────────────────────
+  phase "3/3  Echter VoIP-Test-Push"
+  local phone="${1:-}"
+  if [ -z "$phone" ]; then
+    info "Übersprungen. Mit Telefonnummer testen:  koroctl voip +4367612345678"
+    info "Danach auf dem iPhone: Koro KOMPLETT schließen und schauen ob CallKit klingelt."
+  else
+    info "Sende echten VoIP-Push an Geräte von ${C_BOLD}$phone${C_RESET} …"
+    docker exec "$inst" node -e '
+      (async () => {
+        const phone = process.argv[1];
+        const { supabase } = require("./src/db/supabase");
+        const { data: user } = await supabase.from("users").select("id").eq("phone_e164", phone).maybeSingle();
+        if (!user) { console.log("NO_USER (phone_e164 nicht gefunden — Nummer im +E164-Format?)"); process.exit(0); }
+        const { data: devs } = await supabase.from("devices").select("id").eq("user_id", user.id).is("revoked_at", null);
+        const ids = (devs||[]).map(d => d.id);
+        if (!ids.length) { console.log("NO_DEVICES"); process.exit(0); }
+        const { data: toks } = await supabase.from("push_tokens").select("device_id,voip_token").in("device_id", ids).not("voip_token","is",null);
+        if (!toks || !toks.length) { console.log("NO_VOIP_TOKEN"); process.exit(0); }
+        // Direkt pushVoipCall aus dem echten Code aufrufen — loggt sent/failed selbst.
+        const { pushIncomingCall } = require("./src/push");
+        await pushIncomingCall(ids, { callId: "voip-selftest", conversationId: "voip-selftest", kind: "audio", fromName: "Koro Test" });
+        console.log("SENT_" + toks.length);
+        process.exit(0);
+      })().catch(e => { console.log("ERR:" + (e && e.message || e)); process.exit(0); });
+    ' "$phone" 2>&1 | sed "s/^/      /"
+    info "Ergebnis oben. Achte auf die ${C_BOLD}[voip-push] APNs result: sent=.. failed=..${C_RESET}-Zeile"
+    info "  · sent=1 failed=0  → Push ist raus. Klingelt es nicht, liegt's am App-/CallKit-Setup."
+    info "  · failed>0         → APNs lehnt ab (meist BadDeviceToken = Sandbox/Prod-Mismatch)."
+    info "  · NO_VOIP_TOKEN    → App hat keinen PushKit-Token registriert."
+  fi
+
+  phase "VoIP-Check abgeschlossen"
+  printf '\n'
+}
+
+# =============================================================================
 #  TURN  — verifiziert, dass WebRTC-Anrufe ECHTE TURN-Relays bekommen
 # =============================================================================
 #  Warum: buildIceServers() fällt bei einem Fehler STILL auf STUN-only zurück
@@ -448,6 +532,7 @@ case "$CMD" in
   restart) require_root restart; do_restart ;;
   status)  do_status ;;
   turn)    do_turn ;;
+  voip)    shift; do_voip "$@" ;;
   log|logs) shift; do_log "$@" ;;
   *)
     printf 'koroctl — koro-api Stack-Steuerung\n\n'
@@ -458,6 +543,9 @@ case "$CMD" in
     printf '  status         ausführlicher Zustand (Container, edge, DB, Commit, App-Config)\n'
     printf '  turn           prüft, ob WebRTC-Anrufe echte TURN-Relays bekommen\n'
     printf '                 (kein stiller STUN-only-Fallback) — Cloudflare-Mint inkl.\n'
+    printf '  voip [telefon] diagnostiziert Killed-App-Klingeln (PushKit/VoIP):\n'
+    printf '                 Env, voip_token-Übersicht, optional echter Test-Push\n'
+    printf '                 z.B.  koroctl voip +4367612345678\n'
     printf '  log <ziel>     Logs ansehen, neueste zuerst — ziel: blue|green|redis\n'
     printf '                 z.B.  koroctl log green        (letzte 200 Zeilen)\n'
     printf '                       koroctl log blue 500     (letzte 500 Zeilen)\n'
