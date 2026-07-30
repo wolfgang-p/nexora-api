@@ -409,6 +409,8 @@ r('POST',   '/meetings/:roomId/analysis/retry', meetings.retryAnalysis, { auth: 
 // Shared collaborative notes (live-synced over WS; these persist the doc).
 r('GET',    '/meetings/:roomId/notes',          meetings.getNotes,      { auth: false, optionalAuth: true });
 r('PUT',    '/meetings/:roomId/notes',          meetings.putNotes,      { auth: false, optionalAuth: true });
+// Private copilot suggestions the user chose to keep (shown only in THEIR analysis).
+r('POST',   '/meetings/:roomId/copilot-suggestion', meetings.saveCopilotSuggestion, { auth: false, optionalAuth: true });
 // Full host recording (camera + screen + all audio, host-mixed).
 r('POST',   '/meetings/:roomId/full-recording-chunk',    meetings.fullRecordingChunk,    { auth: false, optionalAuth: true });
 r('POST',   '/meetings/:roomId/full-recording-finalize', meetings.fullRecordingFinalize, { auth: false, optionalAuth: true });

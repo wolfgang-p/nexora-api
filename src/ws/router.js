@@ -158,6 +158,12 @@ async function route(ws, data) {
       const p = data.payload || data;
       return assistant.pushAudio(deviceId, p.speaker, p.pcm, p.mime);
     }
+    case 'assistant.ask': {
+      const q = typeof data.question === 'string' ? data.question : (data.payload?.question || '');
+      return assistant.ask(deviceId, q);
+    }
+    case 'assistant.summarize':
+      return assistant.summarize(deviceId);
     case 'assistant.stop':
       return assistant.stopSession(deviceId, 'user');
 

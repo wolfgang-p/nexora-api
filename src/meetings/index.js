@@ -1058,7 +1058,7 @@ async function ensureAnalysisPending(meetingId) {
 }
 
 /** Shape a full analysis payload (durations + summary + transcript timeline). */
-async function buildAnalysisPayload(meeting, analysis) {
+async function buildAnalysisPayload(meeting, analysis, opts = {}) {
   const [{ data: participants }, { data: segments }, { data: notesRow }] = await Promise.all([
     supabase.from('meeting_participants')
       .select('display_name, device_id, user_id, is_host, joined_at, left_at')
@@ -1108,6 +1108,8 @@ async function buildAnalysisPayload(meeting, analysis) {
       offset_ms: Number(s.started_offset_ms) || 0,
     })),
     notes: (notesRow?.content || '').trim() || null,
+    // PRIVATE: only present in the owner's own analysis, never in the shared view.
+    copilot_suggestions: opts.copilotSuggestions || [],
     full_recording: analysis.full_recording_media_id
       ? { media_id: analysis.full_recording_media_id, status: analysis.full_recording_status || 'ready' }
       : (analysis.full_recording_status && analysis.full_recording_status !== 'none'
@@ -1130,7 +1132,10 @@ async function getAnalysis(req, res, { params }) {
     .select('*').eq('meeting_id', meeting.id).maybeSingle();
   if (!analysis) return ok(res, { status: 'none' });
 
-  ok(res, await buildAnalysisPayload(meeting, analysis));
+  // Private: attach the CALLER's own kept copilot suggestions (device-scoped).
+  const actor = actorFor(req, {});
+  const copilotSuggestions = await getOwnCopilotSuggestions(meeting.id, actor);
+  ok(res, await buildAnalysisPayload(meeting, analysis, { copilotSuggestions }));
 }
 
 /**
@@ -1215,6 +1220,53 @@ async function putNotes(req, res, { params }) {
   }, { onConflict: 'meeting_id' });
   if (error) return serverError(res, 'Notes save failed', error);
   ok(res, { ok: true });
+}
+
+// ── Private "Koro Copilot" saved suggestions ──────────────────────────────
+
+/**
+ * POST /meetings/:roomId/copilot-suggestion   { kind, title, text }
+ * The user kept a copilot suggestion (e.g. copied it). Persist it PRIVATELY,
+ * scoped to their device, so it can show in THEIR analysis. Never shared.
+ */
+async function saveCopilotSuggestion(req, res, { params }) {
+  const body = await readJson(req).catch(() => null) || {};
+  const actor = actorFor(req, body);
+  if (!actor.deviceId) return badRequest(res, 'device required');
+  const text = typeof body.text === 'string' ? body.text.trim().slice(0, 2000) : '';
+  if (!text) return badRequest(res, 'text required');
+  const kind = ['objection', 'suggestion', 'nudge', 'answer'].includes(body.kind) ? body.kind : 'suggestion';
+  const title = typeof body.title === 'string' ? body.title.trim().slice(0, 200) : null;
+
+  const { data: meeting } = await supabase.from('meetings')
+    .select('id').eq('room_id', params.roomId).maybeSingle();
+  if (!meeting) return notFound(res);
+
+  const { error } = await supabase.from('meeting_copilot_suggestions').insert({
+    meeting_id: meeting.id,
+    owner_device_id: actor.deviceId,
+    owner_user_id: actor.userId,
+    kind, title, text,
+  });
+  if (error) return serverError(res, 'Copilot save failed', error);
+  ok(res, { ok: true });
+}
+
+/** Fetch a caller's own saved copilot suggestions for a meeting (private). */
+async function getOwnCopilotSuggestions(meetingId, actor) {
+  if (!actor?.deviceId) return [];
+  let q = supabase.from('meeting_copilot_suggestions')
+    .select('kind, title, text, created_at')
+    .eq('meeting_id', meetingId)
+    .order('created_at', { ascending: true });
+  // Match by device; also include the user's rows across their devices.
+  if (actor.userId) {
+    q = q.or(`owner_device_id.eq.${actor.deviceId},owner_user_id.eq.${actor.userId}`);
+  } else {
+    q = q.eq('owner_device_id', actor.deviceId);
+  }
+  const { data } = await q;
+  return (data || []).map((r) => ({ kind: r.kind, title: r.title, text: r.text }));
 }
 
 // ── Full host recording (camera + screen + everyone's audio) ──────────────
@@ -1355,4 +1407,5 @@ module.exports = {
   startNow, kickParticipant, setPdf, clearPdf, uploadPdf, endMeeting,
   recordingChunk, getAnalysis, getSharedAnalysis, ensureAnalysisPending,
   retryAnalysis, getNotes, putNotes, fullRecordingChunk, fullRecordingFinalize,
+  saveCopilotSuggestion,
 };

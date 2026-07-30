@@ -45,6 +45,8 @@ class AssistantSession {
     this.lastSuggestAt = 0;
     this.lastRemoteAt = 0;
     this.recentSuggestions = [];      // last suggestion texts (for de-duplication)
+    this.askSeq = 0;                  // id counter for "Ask Copilot" answers
+    this.summarySeq = 0;              // id counter for "Wo stehen wir?" statuses
     this.pendingTranscribe = 0;       // in-flight Whisper calls
     this.suggestTimer = null;
     this.proactiveTimer = null;
@@ -170,6 +172,70 @@ class AssistantSession {
     }
   }
 
+  /**
+   * The user typed a direct question to the copilot ("Ask Copilot"). Answer it
+   * with the full meeting context. Replies with its OWN message type so the UI
+   * can show it as a chat answer, not a suggestion card.
+   */
+  async askQuestion(question) {
+    if (this.closed) return;
+    const q = String(question || '').trim().slice(0, 500);
+    if (!q) return;
+    if (!ai.enabled()) { this.send({ type: 'assistant.error', error: 'ai_disabled' }); return; }
+    const qId = ++this.askSeq;
+    this.send({ type: 'assistant.answer', payload: { qId, question: q, answer: null, pending: true } });
+
+    const transcript = this.renderTranscript();
+    const goal = this.goal || '(kein Ziel angegeben)';
+    const messages = [
+      { role: 'system', content: ASK_PROMPT },
+      {
+        role: 'user',
+        content:
+          `ZIEL DES NUTZERS:\n${goal}\n\n` +
+          `GESPRÄCHSVERLAUF (Ich = der Nutzer, Gegenüber = Gesprächspartner):\n${transcript || '(noch nichts gesprochen)'}\n\n` +
+          `FRAGE DES NUTZERS AN DICH:\n${q}`,
+      },
+    ];
+    try {
+      const { text } = await ai.chat(messages, { maxTokens: 500, temperature: 0.5 });
+      const answer = (text || '').trim() || 'Dazu habe ich gerade keine gute Antwort.';
+      if (!this.closed) this.send({ type: 'assistant.answer', payload: { qId, question: q, answer, pending: false } });
+    } catch (err) {
+      console.error('[assistant] ask error:', err?.message || err);
+      if (!this.closed) this.send({ type: 'assistant.answer', payload: { qId, question: q, answer: 'Fehler beim Beantworten.', pending: false } });
+    }
+  }
+
+  /**
+   * "Wo stehen wir?" — a short live status of the conversation on demand.
+   */
+  async summarize() {
+    if (this.closed) return;
+    if (!ai.enabled()) { this.send({ type: 'assistant.error', error: 'ai_disabled' }); return; }
+    const sId = ++this.summarySeq;
+    this.send({ type: 'assistant.status', payload: { sId, text: null, pending: true } });
+
+    const transcript = this.renderTranscript();
+    if (!transcript) {
+      this.send({ type: 'assistant.status', payload: { sId, text: 'Noch nichts gesagt — sobald gesprochen wird, fasse ich zusammen.', pending: false } });
+      return;
+    }
+    const goal = this.goal || '(kein Ziel angegeben)';
+    const messages = [
+      { role: 'system', content: STATUS_PROMPT },
+      { role: 'user', content: `ZIEL:\n${goal}\n\nGESPRÄCHSVERLAUF:\n${transcript}` },
+    ];
+    try {
+      const { text } = await ai.chat(messages, { maxTokens: 300, temperature: 0.4 });
+      const out = (text || '').trim() || 'Keine Zusammenfassung möglich.';
+      if (!this.closed) this.send({ type: 'assistant.status', payload: { sId, text: out, pending: false } });
+    } catch (err) {
+      console.error('[assistant] status error:', err?.message || err);
+      if (!this.closed) this.send({ type: 'assistant.status', payload: { sId, text: 'Fehler bei der Zusammenfassung.', pending: false } });
+    }
+  }
+
   isDuplicate(text) {
     const a = normText(text);
     if (!a) return true;
@@ -229,6 +295,16 @@ function pushAudio(deviceId, who, b64, mimeType) {
   if (s) s.pushAudio(who, b64, mimeType);
 }
 
+function ask(deviceId, question) {
+  const s = sessions.get(deviceId);
+  if (s) s.askQuestion(question);
+}
+
+function summarize(deviceId) {
+  const s = sessions.get(deviceId);
+  if (s) s.summarize();
+}
+
 function stopSession(deviceId, reason) {
   const s = sessions.get(deviceId);
   if (s) s.stop(reason);
@@ -257,6 +333,19 @@ const SYSTEM_PROMPT =
   'konkrete Frage stellen · ein Nutzenargument · ein Beleg/Zahl · ein Vergleich · ' +
   'ein Zugeständnis/Angebot · eine emotionale Ansprache. Bringe nie zweimal denselben ' +
   'Denkweg, auch nicht anders formuliert.';
+
+const ASK_PROMPT =
+  'Du bist "Koro Copilot", der private Assistent eines Nutzers in einem Live-Gespräch ' +
+  '(z. B. Verkauf/Verhandlung). Der Nutzer stellt dir mitten im Gespräch eine Frage. ' +
+  'Beantworte sie kurz, konkret und sofort umsetzbar, im Kontext des Gesprächsverlaufs ' +
+  'und des Ziels. Wenn passend, gib eine nummerierte Liste (z. B. „3 Argumente"). Keine ' +
+  'Fakten erfinden. Klartext auf Deutsch, keine Einleitung wie „Gerne".';
+
+const STATUS_PROMPT =
+  'Du bist "Koro Copilot". Fasse den aktuellen Stand des Live-Gesprächs in maximal ' +
+  '3 kurzen Punkten zusammen: (1) Was will/braucht das Gegenüber? (2) Welche Einwände ' +
+  'oder offenen Punkte gibt es? (3) Was ist der beste nächste Schritt Richtung Ziel? ' +
+  'Sehr knapp, Stichworte reichen. Deutsch, keine Einleitung.';
 
 const CJK_ETC = /[　-鿿가-힯Ѐ-ӿ؀-ۿ぀-ヿ]/g;
 const LATIN = /[A-Za-zÀ-ÿ]/g;
@@ -307,4 +396,4 @@ function normaliseSuggestions(parsed) {
   return out;
 }
 
-module.exports = { startSession, updateGoal, pushAudio, stopSession };
+module.exports = { startSession, updateGoal, pushAudio, ask, summarize, stopSession };
