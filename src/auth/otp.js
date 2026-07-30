@@ -157,9 +157,13 @@ async function verifyOtp(req, res) {
   // Reject if this phone OR this device's identity_public_key is on the
   // fingerprint blocklist — a banned user can't re-register by rotating
   // the device, and a banned device can't pivot to a different number.
+  //
+  // The review number is exempt: Apple's reviewer deletes the demo account and
+  // must sign back in with the same number to test the next build. deleteMe
+  // already avoids banning it; this skip is a safeguard for any stale ban row.
   const phoneHash = sha256(phone);
   const pubKeyB64 = String(deviceInput.identity_public_key || '');
-  {
+  if (!isReview) {
     const { data: bans } = await supabase
       .from('banned_fingerprints')
       .select('id')

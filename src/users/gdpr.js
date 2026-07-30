@@ -18,6 +18,13 @@
 const { supabase } = require('../db/supabase');
 const { readJson, ok, badRequest, serverError } = require('../util/response');
 const { audit } = require('../util/audit');
+const { sha256 } = require('../util/crypto');
+const config = require('../config');
+
+/** phone_hash of the App-Store review number, if one is configured. */
+function reviewPhoneHash() {
+  return config.review.phone ? sha256(config.review.phone) : null;
+}
 
 /**
  * GET /users/me/export — streams a downloadable JSON archive of every
@@ -153,7 +160,13 @@ async function deleteMe(req, res) {
 
   // Grace-period anti-abuse: the number can't re-register for 30 days.
   // This is distinct from a policy ban — no admin involvement.
-  if (user?.phone_hash) {
+  //
+  // EXCEPTION: the App-Store review number. Apple's reviewer must be able to
+  // delete the demo account and then sign back in with the SAME number to test
+  // the next build — so we never lock the review number. (verifyOtp also skips
+  // the ban check for it, as a belt-and-suspenders safeguard.)
+  const rhash = reviewPhoneHash();
+  if (user?.phone_hash && user.phone_hash !== rhash) {
     await supabase.from('banned_fingerprints').insert({
       phone_hash: user.phone_hash,
       reason: 'gdpr.self_delete',
