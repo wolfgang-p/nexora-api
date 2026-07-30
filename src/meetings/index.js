@@ -166,6 +166,29 @@ function actorFor(req, body) {
   };
 }
 
+/**
+ * Validate optional per-meeting branding from an untrusted client. Returns an
+ * object with any invalid field set to null (so bad input is dropped, not
+ * rejected). Colors must be #RGB / #RRGGBB hex; the logo must be an https URL.
+ */
+function sanitizeBranding(b) {
+  const out = { primary: null, accent: null, logo: null, name: null };
+  if (!b || typeof b !== 'object') return out;
+  const hex = (v) => (typeof v === 'string' && /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v.trim()) ? v.trim() : null);
+  out.primary = hex(b.primary);
+  out.accent = hex(b.accent);
+  if (typeof b.logo === 'string') {
+    const u = b.logo.trim().slice(0, 1000);
+    // https only, no data:/javascript:, must parse as a URL.
+    try { if (u && new URL(u).protocol === 'https:') out.logo = u; } catch { /* invalid */ }
+  }
+  if (typeof b.name === 'string') {
+    const n = b.name.trim().slice(0, 60);
+    if (n) out.name = n;
+  }
+  return out;
+}
+
 // ── Endpoints ─────────────────────────────────────────────────────────
 
 async function create(req, res) {
@@ -196,6 +219,10 @@ async function create(req, res) {
     roomId = newRoomId();
   }
 
+  // Optional per-instance branding, fixed onto the meeting at creation so the
+  // plain join link inherits it without carrying URL params. Validated hard.
+  const brand = sanitizeBranding(body.branding);
+
   const { data: meeting, error } = await supabase.from('meetings').insert({
     room_id: roomId,
     title,
@@ -206,6 +233,10 @@ async function create(req, res) {
     scheduled_at: scheduledAt ? scheduledAt.toISOString() : null,
     max_participants: Math.max(2, Math.min(50, Number(body.max_participants) || 50)),
     allow_guests: body.allow_guests !== false,
+    brand_primary: brand.primary,
+    brand_accent: brand.accent,
+    brand_logo: brand.logo,
+    brand_name: brand.name,
   }).select('*').single();
   if (error) return serverError(res, 'Could not create meeting', error);
 
@@ -1100,6 +1131,10 @@ async function buildAnalysisPayload(meeting, analysis, opts = {}) {
         ? new Date(meeting.ended_at).getTime() - new Date(meeting.started_at).getTime()
         : null,
     },
+    // Per-instance branding (null on plain Koro) so the analysis page matches.
+    branding: (meeting.brand_primary || meeting.brand_logo || meeting.brand_name)
+      ? { primary: meeting.brand_primary || null, accent: meeting.brand_accent || null, logo: meeting.brand_logo || null, name: meeting.brand_name || null }
+      : null,
     participants: [...byPerson.values()].sort((a, b) => b.total_ms - a.total_ms),
     summary_md: analysis.summary_md || null,
     transcript: (segments || []).map((s) => ({
@@ -1125,7 +1160,7 @@ async function buildAnalysisPayload(meeting, analysis, opts = {}) {
  */
 async function getAnalysis(req, res, { params }) {
   const { data: meeting } = await supabase.from('meetings')
-    .select('id, title, started_at, ended_at').eq('room_id', params.roomId).maybeSingle();
+    .select('id, title, started_at, ended_at, brand_primary, brand_accent, brand_logo, brand_name').eq('room_id', params.roomId).maybeSingle();
   if (!meeting) return notFound(res);
 
   const { data: analysis } = await supabase.from('meeting_analysis')
@@ -1151,7 +1186,7 @@ async function getSharedAnalysis(req, res, { params }) {
   if (!analysis) return notFound(res);
 
   const { data: meeting } = await supabase.from('meetings')
-    .select('id, title, started_at, ended_at').eq('id', analysis.meeting_id).maybeSingle();
+    .select('id, title, started_at, ended_at, brand_primary, brand_accent, brand_logo, brand_name').eq('id', analysis.meeting_id).maybeSingle();
   if (!meeting) return notFound(res);
 
   if (analysis.status !== 'done') {
